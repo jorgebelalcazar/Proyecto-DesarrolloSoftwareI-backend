@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 
 import os
+import sys  # Permite saber con qué comando se ejecutó Django
 import dj_database_url
 from dotenv import load_dotenv
 
@@ -41,7 +42,13 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "core",
+    "usuarios",  # Dominio de usuarios y acceso
 ]
+
+# Modelo de usuario propio del proyecto.
+# Le indica a Django que use usuarios.Usuario en lugar de su usuario por defecto.
+# Debe definirse ANTES de la primera migración del proyecto.
+AUTH_USER_MODEL = "usuarios.Usuario"
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -81,6 +88,15 @@ DATABASES = {
     "default": dj_database_url.config(conn_max_age=600, ssl_require=True)
 }
 
+# Base de datos para las pruebas automáticas.
+# Cuando se ejecuta "python manage.py test", se usa SQLite en memoria:
+#   - las pruebas son rápidas;
+#   - no dependen de internet ni de Supabase;
+#   - no tocan los datos reales.
+if "test" in sys.argv:
+    DATABASES = {
+        "default": {"ENGINE": "django.db.backends.sqlite3", "NAME": ":memory:"}
+    }
 
 # Password validation
 # https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
