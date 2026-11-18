@@ -20,4 +20,7 @@ urlpatterns = [
 
     # API del dominio de usuarios: registro, creación, consulta, etc.
     path("api/usuarios/", include("usuarios.urls")),
+
+    # Autenticación: login, renovación de tokens y sesión (HU-03).
+    path("api/auth/", include("autenticacion.urls")),
 ]
