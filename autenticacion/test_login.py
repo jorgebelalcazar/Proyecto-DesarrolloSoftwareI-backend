@@ -165,3 +165,39 @@ class LoginTests(APITestCase):
         # Verificar: se falla cerrado con 503 y no se entregan tokens.
         self.assertEqual(respuesta.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertNotIn("access", respuesta.data)
+        
+    # ---------------------------------------------------------------- HU-04
+    def test_login_con_multiples_roles_devuelve_arreglo_completo(self, captcha_falso):
+        """Verifica que el login incluya todos los roles asignados al usuario."""
+        # Preparar: asignar un segundo rol válido del catálogo Rol.Nombre
+        segundo_rol = next(r for r in Rol.Nombre.values if r != Rol.Nombre.AUTOR)
+        self.usuario.asignar_rol(segundo_rol)
+
+        # Ejecutar
+        respuesta = self.iniciar_sesion()
+
+        # Verificar: 200 OK y el arreglo usuario.roles contiene ambos roles
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertIn("roles", respuesta.data["usuario"])
+        self.assertCountEqual(
+            respuesta.data["usuario"]["roles"],
+            [Rol.Nombre.AUTOR, segundo_rol],
+        )
+
+    def test_sesion_devuelve_arreglo_dinamico_de_roles(self, captcha_falso):
+        """Verifica que /api/auth/sesion/ conserve los roles al recargar sesión."""
+        # Preparar: asignar dos roles e iniciar sesión para obtener el token
+        segundo_rol = next(r for r in Rol.Nombre.values if r != Rol.Nombre.AUTOR)
+        self.usuario.asignar_rol(segundo_rol)
+        access = self.iniciar_sesion().data["access"]
+
+        # Ejecutar: consultar el endpoint de sesión con el token Bearer
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+        respuesta = self.client.get(self.url_sesion)
+
+        # Verificar: la respuesta entrega ambos roles autorizados
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertCountEqual(
+            respuesta.data["roles"],
+            [Rol.Nombre.AUTOR, segundo_rol],
+        )

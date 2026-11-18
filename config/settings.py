@@ -162,6 +162,7 @@ REST_FRAMEWORK = {
     # Así, si alguien olvida proteger un endpoint nuevo, queda protegido igual.
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
+        "autenticacion.permisos.ValidarRolActivo",
     ],
 }
 
@@ -191,3 +192,4 @@ RECAPTCHA_URL_VERIFICACION = "https://www.google.com/recaptcha/api/siteverify"
 # La verificación suele tardar menos de 500 ms (meta de la HU-03.2); este es el
 # límite a partir del cual se considera que Google no está disponible.
 RECAPTCHA_TIEMPO_LIMITE = 3
+
