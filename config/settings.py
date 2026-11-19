@@ -16,6 +16,7 @@ import os
 import sys  # Permite saber con qué comando se ejecutó Django
 import dj_database_url
 from dotenv import load_dotenv
+from datetime import timedelta  # Para definir la duración de los tokens JWT
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -43,8 +44,9 @@ INSTALLED_APPS = [
     "corsheaders",
     "core",
     "usuarios",  # Dominio de usuarios y acceso
-    "rest_framework_simplejwt",
     "rest_framework_simplejwt.token_blacklist",    
+    "rest_framework_simplejwt",  # Tokens JWT; se registra para usar sus mensajes en español
+    "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
 ]
 
 # Modelo de usuario propio del proyecto.
@@ -142,3 +144,51 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173"]
+
+# ---------------------------------------------------------------------------
+# Django REST Framework (HU-03)
+# ---------------------------------------------------------------------------
+REST_FRAMEWORK = {
+    # Cómo se identifica a quien hace cada petición.
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        # Principal: el token JWT del encabezado "Authorization: Bearer <token>".
+        # Es el mecanismo que usa el front-end en React.
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        # Secundario: la sesión del panel de administración. Solo facilita
+        # probar los endpoints protegidos desde la API navegable.
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    # Seguro por defecto: todo endpoint exige un usuario autenticado, salvo que
+    # la vista indique lo contrario (el registro, el login y /api/salud/).
+    # Así, si alguien olvida proteger un endpoint nuevo, queda protegido igual.
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+}
+
+# ---------------------------------------------------------------------------
+# Tokens JWT (HU-03.1)
+# ---------------------------------------------------------------------------
+SIMPLE_JWT = {
+    # Token de acceso: acompaña cada petición. Dura poco para limitar el daño
+    # si alguien lo roba.
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    # Token de renovación: solo sirve para pedir un nuevo token de acceso.
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    # Prefijo del encabezado: "Authorization: Bearer <token>".
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
+# ---------------------------------------------------------------------------
+# Google reCAPTCHA v2 (HU-03.2)
+# ---------------------------------------------------------------------------
+# Clave secreta del back-end. Se lee del archivo .env y nunca se escribe en el código.
+RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY", "")
+
+# Dirección del servicio de Google que verifica los tokens de CAPTCHA.
+RECAPTCHA_URL_VERIFICACION = "https://www.google.com/recaptcha/api/siteverify"
+
+# Tiempo máximo de espera de la respuesta de Google, en segundos.
+# La verificación suele tardar menos de 500 ms (meta de la HU-03.2); este es el
+# límite a partir del cual se considera que Google no está disponible.
+RECAPTCHA_TIEMPO_LIMITE = 3
