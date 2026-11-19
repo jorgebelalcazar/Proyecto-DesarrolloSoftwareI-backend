@@ -11,6 +11,12 @@ from rest_framework.permissions import AllowAny
 from .models import Usuario
 from .serializers import RegistroAutorSerializer
 
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
+
 
 class RegistroAutorView(generics.CreateAPIView):
     """
@@ -41,3 +47,28 @@ class RegistroAutorView(generics.CreateAPIView):
     # No se autentica a nadie en esta ruta. Así, aunque el navegador tenga una
     # sesión abierta del panel de administración, no se mezcla con el registro.
     authentication_classes = []
+
+
+
+class LogoutView(APIView):
+    """
+    POST /api/auth/logout/ (SCRUM-66)
+    Invalida el refresh token usando la lista negra de Simple JWT.
+    """
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request):
+        try:
+            # Capturamos el refresh token que envía el usuario
+            refresh_token = request.data.get("refresh")
+            if not refresh_token:
+                return Response({"error": "Se requiere el refresh token"}, status=status.HTTP_400_BAD_REQUEST)
+                
+            token = RefreshToken(refresh_token)
+            
+            # Lo enviamos a la lista negra
+            token.blacklist()
+            
+            return Response({"message": "Sesión cerrada exitosamente"}, status=status.HTTP_205_RESET_CONTENT)
+        except Exception as e:
+            return Response({"error": "Token inválido o ya expirado"}, status=status.HTTP_400_BAD_REQUEST)

@@ -43,6 +43,8 @@ INSTALLED_APPS = [
     "corsheaders",
     "core",
     "usuarios",  # Dominio de usuarios y acceso
+    "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",    
 ]
 
 # Modelo de usuario propio del proyecto.

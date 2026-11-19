@@ -8,7 +8,7 @@ agregarán sus rutas en esta misma lista.
 
 from django.urls import path
 
-from .views import RegistroAutorView
+from .views import RegistroAutorView, LogoutView
 
 # Espacio de nombres: permite referirse a las rutas como "usuarios:registro-autor",
 # sin escribir la dirección completa (se usa en las pruebas con reverse).
@@ -17,4 +17,7 @@ app_name = "usuarios"
 urlpatterns = [
     # POST /api/usuarios/registro-autor/   (HU-01)
     path("registro-autor/", RegistroAutorView.as_view(), name="registro-autor"),
+
+    # POST /api/usuarios/logout/   (SCRUM-66)
+    path("logout/", LogoutView.as_view(), name="logout"),
 ]
