@@ -9,14 +9,17 @@ app sin tocar este archivo.
 from django.contrib import admin
 from django.urls import include, path
 
-from core.views import salud
+from core.views import LineaTematicaListView, salud
 
 urlpatterns = [
     # Panel de administración de Django.
     path("admin/", admin.site.urls),
 
-    # Endpoint de prueba de integración.
+    # Endpoint de prueba de integración (Sprint 0).
     path("api/salud/", salud),
+
+    # Catálogo de líneas temáticas (HU-02.8).
+    path("api/lineas-tematicas/", LineaTematicaListView.as_view(), name="lineas-tematicas"),
 
     # API del dominio de usuarios: registro, creación, consulta, etc.
     path("api/usuarios/", include("usuarios.urls")),

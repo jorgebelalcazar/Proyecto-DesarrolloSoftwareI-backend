@@ -15,6 +15,7 @@ from pathlib import Path
 import os
 import sys  # Permite saber con qué comando se ejecutó Django
 import dj_database_url
+from corsheaders.defaults import default_headers  # Encabezados que CORS permite por defecto
 from dotenv import load_dotenv
 from datetime import timedelta  # Para definir la duración de los tokens JWT
 
@@ -143,6 +144,10 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173"]
+
+# Encabezados que el front-end puede enviar: los de siempre más el del rol activo.
+# Sin esta línea, el navegador bloquearía el encabezado X-Rol-Activo (HU-02 y HU-04).
+CORS_ALLOW_HEADERS = (*default_headers, "x-rol-activo")
 
 # ---------------------------------------------------------------------------
 # Django REST Framework (HU-03)
