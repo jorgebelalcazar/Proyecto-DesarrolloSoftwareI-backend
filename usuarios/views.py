@@ -6,11 +6,12 @@ y devuelve la respuesta en JSON con el código de estado correspondiente.
 """
 
 from rest_framework import generics
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.pagination import PageNumberPagination
 
 from .models import Usuario
 from .permisos import IsAdminOrComitePermission
-from .serializers import CrearUsuarioSerializer, RegistroAutorSerializer
+from .serializers import CrearUsuarioSerializer, RegistroAutorSerializer, UsuarioListadoSerializer
 
 
 class RegistroAutorView(generics.CreateAPIView):
@@ -62,3 +63,34 @@ class CrearUsuarioView(generics.CreateAPIView):
     # más estricto que el global: además de estar autenticado, el rol activo
     # debe ser ADMIN o COMITE.
     permission_classes = [IsAdminOrComitePermission]
+
+
+class UsuarioPagination(PageNumberPagination):
+    """
+    Paginación por número de página para el listado de usuarios (HU-08).
+
+    Evita respuestas pesadas (heavy payload) devolviendo bloques manejables
+    con metadatos: count, next, previous y results.
+    """
+
+    page_size = 10
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class ListarUsuariosView(generics.ListAPIView):
+    """
+    GET /api/usuarios/   (HU-08)
+
+    Permite que cualquier usuario autenticado (Administrador, Comité o Autor)
+    liste y consulte los usuarios registrados en la conferencia de forma paginada.
+
+    Respuestas:
+- 200 OK:           listado paginado de usuarios.
+- 401 Unauthorized: no se envió un token válido.
+    """
+
+    serializer_class = UsuarioListadoSerializer
+    queryset = Usuario.objects.all()
+    permission_classes = [IsAuthenticated]
+    pagination_class = UsuarioPagination

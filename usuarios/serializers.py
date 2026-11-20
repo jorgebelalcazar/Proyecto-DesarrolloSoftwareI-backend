@@ -300,3 +300,38 @@ class CrearUsuarioSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"correo": [MENSAJE_CORREO_DUPLICADO]})
 
         return usuario
+
+
+# ===========================================================================
+# HU-08: LISTAR Y CONSULTAR USUARIOS REGISTRADOS
+# ===========================================================================
+class UsuarioListadoSerializer(serializers.ModelSerializer):
+    """
+    Datos de lectura de cada usuario en el listado general (HU-08).
+
+    Solo expone información pública/académica necesaria para conocer a los
+    autores y miembros del comité científico. Nunca expone contraseñas ni
+    documentos de identidad.
+    """
+
+    # Muestra los nombres legibles de los roles como "Autor" o "Comité".
+    roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field="nombre")
+
+    # Muestra las especialidades líneas temáticas como texto (__str__ de LineaTematica).
+    especialidades = serializers.StringRelatedField(many=True, read_only=True)
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id",
+            "correo",
+            "nombres",
+            "apellidos",
+            "afiliacion",
+            "pais",
+            "activo",
+            "fecha_registro",
+            "roles",
+            "especialidades",
+        ]
+        read_only_fields = fields
