@@ -91,6 +91,6 @@ class ListarUsuariosView(generics.ListAPIView):
     """
 
     serializer_class = UsuarioListadoSerializer
-    queryset = Usuario.objects.all()
+    queryset = Usuario.objects.prefetch_related("roles", "especialidades").all()
     permission_classes = [IsAuthenticated]
     pagination_class = UsuarioPagination
