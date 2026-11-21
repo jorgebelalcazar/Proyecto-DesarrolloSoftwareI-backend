@@ -12,6 +12,8 @@ Contenido:
   - RegistroAutorSerializer: auto-registro de autores (HU-01).
   - CrearUsuarioSerializer:  creación de usuarios por el Administrador
                              o el Comité (HU-02).
+  - UsuarioDirectorioSerializer y UsuarioDirectorioGestionSerializer:
+    directorio de usuarios (HU-08).
 """
 
 import re
@@ -22,6 +24,7 @@ from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 from core.models import LineaTematica
+from core.serializers import LineaTematicaSerializer
 
 from .models import Especialidad, Rol, Usuario, UsuarioRol
 from .permisos import obtener_rol_activo
@@ -300,3 +303,57 @@ class CrearUsuarioSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"correo": [MENSAJE_CORREO_DUPLICADO]})
 
         return usuario
+
+
+# ===========================================================================
+# HU-08: DIRECTORIO DE USUARIOS (LISTAR Y CONSULTAR)
+# ===========================================================================
+class UsuarioDirectorioSerializer(serializers.ModelSerializer):
+    """
+    Datos públicos de un usuario en el directorio (HU-08).
+
+    Es lo que ve un Autor: nombre, afiliación, país, roles y especialidades.
+    Por el principio de mínimo privilegio NO incluye el correo, el documento,
+    el teléfono, el estado de la cuenta ni, por supuesto, la clave.
+
+    Formato de salida:
+      {
+        "id": 4, "nombres": "Carolina", "apellidos": "Comité",
+        "afiliacion": "Universidad del Valle", "pais": "Colombia",
+        "roles": ["COMITE"],
+        "especialidades": [{"id": 1, "nombre": "Sistemas Inteligentes"}]
+      }
+    """
+
+    # Roles por su código ("ADMIN", "COMITE", "AUTOR"), igual que en el login,
+    # el registro y la creación de usuarios.
+    roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field="nombre")
+
+    # Especialidades con id y nombre, en el mismo formato del catálogo
+    # GET /api/lineas-tematicas/: el front-end muestra el nombre (Chips de la
+    # HU-08.4) y puede usar el id para filtrar (HU-09) o editar (HU-11).
+    especialidades = LineaTematicaSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id", "nombres", "apellidos", "afiliacion", "pais",
+            "roles", "especialidades",
+        ]
+        # Serializador solo de lectura: el directorio no modifica usuarios.
+        read_only_fields = fields
+
+
+class UsuarioDirectorioGestionSerializer(UsuarioDirectorioSerializer):
+    """
+    Datos del directorio para quienes gestionan usuarios: Administrador y Comité (HU-08).
+
+    Hereda los campos públicos y agrega los que necesitan para administrar
+    cuentas (HU-11 y HU-12): el correo, el estado de la cuenta y sus fechas.
+    """
+
+    class Meta(UsuarioDirectorioSerializer.Meta):
+        fields = UsuarioDirectorioSerializer.Meta.fields + [
+            "correo", "activo", "fecha_registro", "fecha_desactivacion",
+        ]
+        read_only_fields = fields
