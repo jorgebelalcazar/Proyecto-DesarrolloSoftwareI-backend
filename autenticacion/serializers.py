@@ -1,10 +1,11 @@
 """
-Serializadores de la autenticación (HU-03).
+Serializadores de la autenticación.
 
-El login valida, en este orden:
-  1. Que lleguen los tres datos: correo, clave y token de CAPTCHA.
-  2. Que el CAPTCHA sea válido (verificado con Google).
-  3. Que el correo y la clave correspondan a un usuario ACTIVO.
+Contenido:
+  - validar_captcha:          verificación del CAPTCHA compartida (HU-03 y HU-06).
+  - LoginSerializer:          inicio de sesión (HU-03).
+  - UsuarioSesionSerializer:  datos del usuario en la sesión (HU-03 y HU-04).
+  - SolicitarPinSerializer:   solicitud del PIN de recuperación (HU-06).
 """
 
 from django.contrib.auth import authenticate
@@ -14,6 +15,33 @@ from usuarios.models import Usuario
 
 from .captcha import CaptchaNoDisponible, verificar_captcha
 from .excepciones import CredencialesInvalidas, ServicioCaptchaNoDisponible
+
+
+def validar_captcha(token, request):
+    """
+    Verifica con Google el token de CAPTCHA del formulario.
+
+    La comparten el login (HU-03) y la solicitud del PIN (HU-06), que son
+    los formularios públicos que un bot podría atacar.
+
+    Resultados:
+      - Si el CAPTCHA es válido, no hace nada.
+      - Si no es válido, lanza un error 400 en el campo "captcha".
+      - Si Google no responde, lanza un error 503 (fallar cerrado).
+    """
+    # REMOTE_ADDR es la dirección IP de quien hace la petición.
+    ip = request.META.get("REMOTE_ADDR") if request else None
+
+    try:
+        captcha_valido = verificar_captcha(token, ip)
+    except CaptchaNoDisponible:
+        # Google no respondió: no es culpa del usuario -> 503.
+        raise ServicioCaptchaNoDisponible()
+
+    if not captcha_valido:
+        raise serializers.ValidationError(
+            {"captcha": ["La verificación CAPTCHA no es válida. Intente de nuevo."]}
+        )
 
 
 class LoginSerializer(serializers.Serializer):
@@ -46,19 +74,8 @@ class LoginSerializer(serializers.Serializer):
         """
         request = self.context.get("request")
 
-        # Paso 1: verificar el CAPTCHA con Google.
-        # REMOTE_ADDR es la dirección IP de quien hace la petición.
-        ip = request.META.get("REMOTE_ADDR") if request else None
-        try:
-            captcha_valido = verificar_captcha(datos["captcha"], ip)
-        except CaptchaNoDisponible:
-            # Google no respondió: no es culpa del usuario -> 503.
-            raise ServicioCaptchaNoDisponible()
-
-        if not captcha_valido:
-            raise serializers.ValidationError(
-                {"captcha": ["La verificación CAPTCHA no es válida. Intente de nuevo."]}
-            )
+        # Paso 1: verificar el CAPTCHA con Google (400 o 503 si falla).
+        validar_captcha(datos["captcha"], request)
 
         # Paso 2: verificar el correo y la clave.
         # authenticate devuelve el usuario si todo es correcto, o None si:
@@ -96,3 +113,24 @@ class UsuarioSesionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Usuario
         fields = ["id", "correo", "nombres", "apellidos", "roles"]
+
+
+class SolicitarPinSerializer(serializers.Serializer):
+    """
+    Datos del formulario "Olvidé mi clave" (HU-06).
+
+    Entrada (JSON):
+      - correo:  correo electrónico de la cuenta.
+      - captcha: el token del widget de Google reCAPTCHA.
+
+    El CAPTCHA impide que un bot use este formulario para enviar cientos de
+    correos o para probar qué correos están registrados.
+    """
+
+    correo = serializers.EmailField()
+    captcha = serializers.CharField(write_only=True)
+
+    def validate(self, datos):
+        """Verifica el CAPTCHA. El correo ya lo validó EmailField (formato)."""
+        validar_captcha(datos["captcha"], self.context.get("request"))
+        return datos

@@ -38,3 +38,20 @@ class ServicioCaptchaNoDisponible(APIException):
         "Intente de nuevo en unos minutos."
     )
     default_code = "captcha_no_disponible"
+
+    
+
+class ServicioCorreoNoDisponible(APIException):
+    """
+    El servidor de correo no aceptó el mensaje con el PIN. Responde 503 (HU-06).
+
+    Como el correo no salió, tampoco se guarda el PIN: el usuario puede
+    solicitarlo de nuevo cuando el servicio se recupere.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = (
+        "No fue posible enviar el correo en este momento. "
+        "Intente de nuevo en unos minutos."
+    )
+    default_code = "correo_no_disponible"
