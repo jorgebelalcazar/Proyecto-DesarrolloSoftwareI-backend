@@ -406,6 +406,32 @@ class PerfilUsuarioSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "correo", "roles", "fecha_registro"]
 
+    CAMPOS_NO_EDITABLES = {
+        "roles",
+        "activo",
+        "is_superuser",
+        "fecha_desactivacion",
+        "correo",
+    }
+
+    def validate(self, datos):
+        """
+        Subtarea HU-10.2: Bloquea explícitamente cualquier intento de auto-escalación
+        de roles privilegiados o modificación del estado activo de la cuenta.
+        """
+        if hasattr(self, "initial_data") and isinstance(self.initial_data, dict):
+            intentos_prohibidos = self.CAMPOS_NO_EDITABLES.intersection(
+                self.initial_data.keys()
+            )
+            if intentos_prohibidos:
+                errores = {
+                    campo: ["No tienes permiso para modificar este campo desde tu perfil."]
+                    for campo in sorted(intentos_prohibidos)
+                }
+                raise serializers.ValidationError(errores)
+
+        return datos
+    
     def to_representation(self, instance):
         """
         Personaliza la salida JSON para que 'especialidades' devuelva
