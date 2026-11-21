@@ -357,3 +357,80 @@ class UsuarioDirectorioGestionSerializer(UsuarioDirectorioSerializer):
             "correo", "activo", "fecha_registro", "fecha_desactivacion",
         ]
         read_only_fields = fields
+
+# ===========================================================================
+# HU-10: EDITAR PROPIO PERFIL (GET/PATCH /api/usuarios/mi-perfil/)
+# ===========================================================================
+class PerfilUsuarioSerializer(serializers.ModelSerializer):
+    """
+    Lectura y edición del perfil propio del usuario autenticado (HU-10).
+
+    Entrada (PATCH):
+    - Editables: nombres, apellidos, tipo_documento, numero_documento,
+      afiliacion, pais, telefono y especialidades (lista de IDs, ej. [1, 3]).
+
+    Salida (GET y PATCH):
+    - Devuelve los datos del usuario, sus roles (solo lectura) y sus
+      especialidades en formato {id, nombre}.
+
+    Seguridad (Criterio 3):
+    - 'roles', 'activo' y 'correo' están en read_only_fields (o excluidos),
+      impidiendo que un Autor se auto-asigne el rol ADMIN o COMITE.
+    """
+
+    roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field="nombre")
+
+    # Para escribir recibimos lista de IDs [1, 3] (write_only=True)
+    especialidades = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=LineaTematica.objects.all(),
+        required=False,
+        write_only=True,
+    )
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id",
+            "correo",
+            "nombres",
+            "apellidos",
+            "tipo_documento",
+            "numero_documento",
+            "afiliacion",
+            "pais",
+            "telefono",
+            "roles",
+            "especialidades",
+            "fecha_registro",
+        ]
+        read_only_fields = ["id", "correo", "roles", "fecha_registro"]
+
+    def to_representation(self, instance):
+        """
+        Personaliza la salida JSON para que 'especialidades' devuelva
+        [{id, nombre}, ...] igual que en el resto de la API (HU-08).
+        """
+        datos = super().to_representation(instance)
+        datos["especialidades"] = LineaTematicaSerializer(
+            instance.especialidades.all(), many=True
+        ).data
+        return datos
+
+    def update(self, instance, validated_data):
+        """
+        Actualiza los campos personales y sincroniza la tabla intermedia
+        'especialidad' dentro de una transacción atómica.
+        """
+        especialidades = validated_data.pop("especialidades", None)
+
+        with transaction.atomic():
+            instance = super().update(instance, validated_data)
+
+            if especialidades is not None:
+                # Reemplazamos las especialidades actuales por las nuevas enviadas
+                Especialidad.objects.filter(usuario=instance).delete()
+                for linea in especialidades:
+                    Especialidad.objects.create(usuario=instance, linea_tematica=linea)
+
+        return instance
