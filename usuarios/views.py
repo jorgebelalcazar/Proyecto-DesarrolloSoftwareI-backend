@@ -10,6 +10,9 @@ from rest_framework.permissions import AllowAny
 
 from core.paginacion import PaginacionEstandar
 
+from django_filters.rest_framework import DjangoFilterBackend
+from .filters import UsuarioFilter
+
 from .models import Rol, Usuario
 from .permisos import IsAdminOrComitePermission, obtener_rol_activo
 from .serializers import (
@@ -17,6 +20,7 @@ from .serializers import (
     RegistroAutorSerializer,
     UsuarioDirectorioGestionSerializer,
     UsuarioDirectorioSerializer,
+    
 )
 
 # Roles que gestionan cuentas y por eso ven el directorio completo (HU-08).
@@ -102,6 +106,8 @@ class ListarUsuariosView(generics.ListAPIView):
     """
 
     pagination_class = PaginacionEstandar
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = UsuarioFilter
 
     def es_gestor(self):
         """Indica si el rol activo de la petición es ADMIN o COMITE."""

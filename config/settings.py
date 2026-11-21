@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "usuarios",  # Dominio de usuarios y acceso
     "rest_framework_simplejwt",  # Tokens JWT; se registra para usar sus mensajes en español
     "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
+    "django_filters",
 ]
 
 # Modelo de usuario propio del proyecto.
