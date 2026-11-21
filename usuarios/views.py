@@ -5,7 +5,7 @@ Una vista recibe la petición HTTP, usa un serializador para validar los datos
 y devuelve la respuesta en JSON con el código de estado correspondiente.
 """
 
-from rest_framework import generics
+from rest_framework import generics, filters
 from rest_framework.permissions import AllowAny
 
 from core.paginacion import PaginacionEstandar
@@ -106,8 +106,9 @@ class ListarUsuariosView(generics.ListAPIView):
     """
 
     pagination_class = PaginacionEstandar
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_class = UsuarioFilter
+    search_fields = ["nombres", "apellidos", "correo", "afiliacion"]
 
     def es_gestor(self):
         """Indica si el rol activo de la petición es ADMIN o COMITE."""

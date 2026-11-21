@@ -45,3 +45,15 @@ class FiltrosDirectorioTests(APITestCase):
         response = self.client.get(f"{self.url}?rol=AUTOR&especialidad={self.especialidad1.id}")
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["correo"], "autor1@test.com")
+
+def test_busqueda_por_texto(self):
+        """Búsqueda libre por texto (HU-09.2)."""
+        # Buscar por coincidencia parcial en el nombre
+        response_nombre = self.client.get(f"{self.url}?search=Juan")
+        self.assertEqual(response_nombre.data["count"], 1)
+        self.assertEqual(response_nombre.data["results"][0]["correo"], "autor1@test.com")
+
+        # Buscar por coincidencia parcial en el correo
+        response_correo = self.client.get(f"{self.url}?search=jefe@test")
+        self.assertEqual(response_correo.data["count"], 1)
+        self.assertEqual(response_correo.data["results"][0]["correo"], "jefe@test.com")
