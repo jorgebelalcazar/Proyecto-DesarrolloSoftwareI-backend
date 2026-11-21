@@ -165,3 +165,31 @@ class LoginTests(APITestCase):
         # Verificar: se falla cerrado con 503 y no se entregan tokens.
         self.assertEqual(respuesta.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertNotIn("access", respuesta.data)
+        
+    # ---------------------------------------------------------------- HU-04
+        # ---------------------------------------------------------------- HU-04
+    def test_login_devuelve_todos_los_roles_del_usuario(self, captcha_falso):
+        """HU-04.1: el login entrega los roles para el selector de rol activo."""
+        # Preparar: el usuario del setUp es AUTOR; le agregamos COMITE.
+        self.usuario.asignar_rol(Rol.Nombre.COMITE)
+
+        # Ejecutar
+        respuesta = self.iniciar_sesion()
+
+        # Verificar: 200 con los dos roles, sin importar el orden.
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertCountEqual(respuesta.data["usuario"]["roles"], ["AUTOR", "COMITE"])
+
+    def test_sesion_devuelve_los_roles_al_recargar_la_pagina(self, captcha_falso):
+        """HU-04.1: /api/auth/sesion/ también entrega los roles."""
+        # Preparar: usuario con dos roles y su token de acceso.
+        self.usuario.asignar_rol(Rol.Nombre.COMITE)
+        access = self.iniciar_sesion().data["access"]
+
+        # Ejecutar: consultar la sesión con el token, como al recargar la página.
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
+        respuesta = self.client.get(self.url_sesion)
+
+        # Verificar
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertCountEqual(respuesta.data["roles"], ["AUTOR", "COMITE"])
