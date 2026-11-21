@@ -8,7 +8,8 @@ agregarán sus rutas en esta misma lista.
 
 from django.urls import path
 
-from .views import CrearUsuarioView, RegistroAutorView, ListarUsuariosView
+from .views import CrearUsuarioView, ListarUsuariosView, RegistroAutorView
+
 # Espacio de nombres: permite referirse a las rutas como "usuarios:registro-autor",
 # sin escribir la dirección completa (se usa en las pruebas con reverse).
 app_name = "usuarios"
@@ -16,10 +17,10 @@ app_name = "usuarios"
 urlpatterns = [
     # POST /api/usuarios/registro-autor/   (HU-01)
     path("registro-autor/", RegistroAutorView.as_view(), name="registro-autor"),
-    
+
     # POST /api/usuarios/crear/   (HU-02) Solo Administrador o Comité.
     path("crear/", CrearUsuarioView.as_view(), name="crear"),
 
-    # GET /api/usuarios/   (HU-08) Listado paginado de usuarios registrados.
+    # GET /api/usuarios/   (HU-08) Directorio paginado; los campos dependen del rol activo.
     path("", ListarUsuariosView.as_view(), name="listar"),
 ]
