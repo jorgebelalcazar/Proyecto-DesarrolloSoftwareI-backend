@@ -85,13 +85,12 @@ class UsuarioSesionSerializer(serializers.ModelSerializer):
     Datos básicos del usuario que inició sesión.
 
     Se devuelven en el login y en /api/auth/sesion/, para que el front-end
-    muestre el nombre del usuario y su arreglo dinámico de roles sin hacer
-    otra petición.
+    muestre el nombre del usuario y sus roles sin hacer otra petición.
     """
 
-    # Lista dinámica con todos los roles asignados al usuario en USUARIO_ROL.
-    # Usa slug_field="nombre" para devolver ["AUTOR", "MIEMBRO_COMITE"],
-    # manteniendo consistencia con RegistroAutorSerializer.
+    # Todos los roles del usuario (tabla usuario_rol), por nombre: ["AUTOR", "COMITE"].
+    # El front-end los usa para mostrar el selector de rol activo (HU-04.1).
+    # Mismo formato que en RegistroAutorSerializer y CrearUsuarioSerializer.
     roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field="nombre")
 
     class Meta:

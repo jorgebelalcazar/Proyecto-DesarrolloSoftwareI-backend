@@ -167,37 +167,29 @@ class LoginTests(APITestCase):
         self.assertNotIn("access", respuesta.data)
         
     # ---------------------------------------------------------------- HU-04
-    def test_login_con_multiples_roles_devuelve_arreglo_completo(self, captcha_falso):
-        """Verifica que el login incluya todos los roles asignados al usuario."""
-        # Preparar: asignar un segundo rol válido del catálogo Rol.Nombre
-        segundo_rol = next(r for r in Rol.Nombre.values if r != Rol.Nombre.AUTOR)
-        self.usuario.asignar_rol(segundo_rol)
+        # ---------------------------------------------------------------- HU-04
+    def test_login_devuelve_todos_los_roles_del_usuario(self, captcha_falso):
+        """HU-04.1: el login entrega los roles para el selector de rol activo."""
+        # Preparar: el usuario del setUp es AUTOR; le agregamos COMITE.
+        self.usuario.asignar_rol(Rol.Nombre.COMITE)
 
         # Ejecutar
         respuesta = self.iniciar_sesion()
 
-        # Verificar: 200 OK y el arreglo usuario.roles contiene ambos roles
+        # Verificar: 200 con los dos roles, sin importar el orden.
         self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-        self.assertIn("roles", respuesta.data["usuario"])
-        self.assertCountEqual(
-            respuesta.data["usuario"]["roles"],
-            [Rol.Nombre.AUTOR, segundo_rol],
-        )
+        self.assertCountEqual(respuesta.data["usuario"]["roles"], ["AUTOR", "COMITE"])
 
-    def test_sesion_devuelve_arreglo_dinamico_de_roles(self, captcha_falso):
-        """Verifica que /api/auth/sesion/ conserve los roles al recargar sesión."""
-        # Preparar: asignar dos roles e iniciar sesión para obtener el token
-        segundo_rol = next(r for r in Rol.Nombre.values if r != Rol.Nombre.AUTOR)
-        self.usuario.asignar_rol(segundo_rol)
+    def test_sesion_devuelve_los_roles_al_recargar_la_pagina(self, captcha_falso):
+        """HU-04.1: /api/auth/sesion/ también entrega los roles."""
+        # Preparar: usuario con dos roles y su token de acceso.
+        self.usuario.asignar_rol(Rol.Nombre.COMITE)
         access = self.iniciar_sesion().data["access"]
 
-        # Ejecutar: consultar el endpoint de sesión con el token Bearer
+        # Ejecutar: consultar la sesión con el token, como al recargar la página.
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {access}")
         respuesta = self.client.get(self.url_sesion)
 
-        # Verificar: la respuesta entrega ambos roles autorizados
+        # Verificar
         self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-        self.assertCountEqual(
-            respuesta.data["roles"],
-            [Rol.Nombre.AUTOR, segundo_rol],
-        )
+        self.assertCountEqual(respuesta.data["roles"], ["AUTOR", "COMITE"])

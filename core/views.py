@@ -1,13 +1,18 @@
 """
 Vistas compartidas del sistema.
 
-Contiene el endpoint de prueba de integración creado en el Sprint 0.
+  GET /api/salud/            -> prueba de integración (Sprint 0).
+  GET /api/lineas-tematicas/ -> catálogo de líneas temáticas (HU-02.8).
 """
 
 from django.db import connection
+from rest_framework import generics
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+
+from .models import LineaTematica
+from .serializers import LineaTematicaSerializer
 
 
 @api_view(["GET"])
@@ -32,3 +37,28 @@ def salud(request):
         "mensaje": "API de la conferencia funcionando",
         "base_de_datos": version_bd,
     })
+
+
+class LineaTematicaListView(generics.ListAPIView):
+    """
+    GET /api/lineas-tematicas/   (HU-02.8)
+
+    Devuelve el catálogo de líneas temáticas, por ejemplo:
+        [{"id": 1, "nombre": "Sistemas Inteligentes"}, ...]
+
+    Lo usan los selectores del front-end:
+      - especialidades de los miembros del comité (HU-02.5);
+      - filtro por especialidad del directorio de usuarios (HU-09.3);
+      - en el futuro, la línea temática de cada artículo (Épica 2).
+
+    Seguridad:
+      - Requiere un usuario autenticado, con cualquier rol: usa el permiso
+        por defecto de settings.py (IsAuthenticated).
+      - Es de solo lectura: ListAPIView solo acepta GET, así que un POST
+        responde 405. Las líneas se cargan con la migración de datos.
+    """
+
+    # Consulta que devuelve la vista. El orden alfabético lo define el
+    # Meta.ordering del modelo LineaTematica.
+    queryset = LineaTematica.objects.all()
+    serializer_class = LineaTematicaSerializer
