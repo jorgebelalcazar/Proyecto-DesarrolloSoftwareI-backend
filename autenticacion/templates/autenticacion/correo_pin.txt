@@ -1,0 +1,12 @@
+Hola {{ nombres }},
+
+Recibimos una solicitud para recuperar la clave de tu cuenta en Nexo.
+
+Tu código de recuperación es: {{ pin }}
+
+El código vence en {{ vigencia_minutos }} minutos y solo se puede usar una vez.
+
+Si no solicitaste este cambio, ignora este correo: tu clave sigue siendo la misma.
+Nunca compartas este código con nadie; el equipo de Nexo no te lo pedirá.
+
+Nexo · Gestión científica de conferencias

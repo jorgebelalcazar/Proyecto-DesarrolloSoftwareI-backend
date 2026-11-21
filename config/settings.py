@@ -200,3 +200,28 @@ RECAPTCHA_URL_VERIFICACION = "https://www.google.com/recaptcha/api/siteverify"
 # límite a partir del cual se considera que Google no está disponible.
 RECAPTCHA_TIEMPO_LIMITE = 3
 
+
+# ---------------------------------------------------------------------------
+# Correo electrónico (HU-06.2)
+# ---------------------------------------------------------------------------
+# Motor de envío. Por defecto, "console": el correo NO se envía, se imprime en
+# la terminal donde corre runserver. Así cada integrante prueba la recuperación
+# de clave sin configurar un servidor de correo.
+# En producción se usa SMTP: "django.core.mail.backends.smtp.EmailBackend".
+# (Durante las pruebas automáticas Django usa su propio buzón en memoria.)
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+
+# Datos del servidor SMTP. Solo se usan con el motor SMTP; se leen del .env.
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+
+# Remitente que ven los usuarios.
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Nexo <no-responder@nexo.local>")
+
+# Tiempo máximo de espera del servidor de correo, en segundos.
+# Sin este límite, un servidor SMTP caído dejaría la petición esperando.
+EMAIL_TIMEOUT = 10
+
