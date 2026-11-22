@@ -17,6 +17,7 @@ from .models import Rol, Usuario
 from .permisos import IsAdminOrComitePermission, obtener_rol_activo
 from .serializers import (
     CrearUsuarioSerializer,
+    PerfilUsuarioSerializer,
     RegistroAutorSerializer,
     UsuarioDirectorioGestionSerializer,
     UsuarioDirectorioSerializer,
@@ -141,3 +142,23 @@ class ListarUsuariosView(generics.ListAPIView):
         if self.es_gestor():
             return UsuarioDirectorioGestionSerializer
         return UsuarioDirectorioSerializer
+
+class MiPerfilView(generics.RetrieveUpdateAPIView):
+    """
+    GET/PATCH /api/usuarios/mi-perfil/   (HU-10)
+
+    Permite a cualquier usuario autenticado (Administrador, Comité o Autor)
+    consultar y editar sus propios datos personales.
+
+    Operación estricta: sobreescribe get_object() para retornar siempre
+    self.request.user, impidiendo leer o editar cuentas ajenas.
+
+    Permisos: no se declara permission_classes para mantener los validadores
+    globales de settings.py (IsAuthenticated y validador de rol activo).
+    """
+
+    serializer_class = PerfilUsuarioSerializer
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_object(self):
+        return self.request.user
