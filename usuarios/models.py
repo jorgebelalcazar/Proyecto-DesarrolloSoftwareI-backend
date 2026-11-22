@@ -14,7 +14,8 @@ from datetime import timedelta
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.hashers import check_password, make_password
 from django.contrib.auth.models import PermissionsMixin
-from django.db import models
+from django.core.exceptions import ValidationError
+from django.db import models, transaction
 from django.utils import timezone
 
 
@@ -238,12 +239,38 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
 
     def save(self, *args, **kwargs):
         """
-        Guarda el usuario asegurando que el correo quede en minúsculas.
-
-        Así, "Ana@x.co" y "ana@x.co" se consideran el mismo usuario y la
-        restricción de unicidad funciona sin importar las mayúsculas.
+        Guarda el usuario asegurando que el correo quede en minúsculas y
+        protegiendo la integridad del último Administrador activo en BD (HU-11.2).
         """
+        # Paso 1: normalizar el correo antes de guardar.
         self.correo = self.correo.strip().lower()
+
+        # Paso 2: si se desactiva un usuario existente, verificar que no sea el único ADMIN activo.
+        if self.pk and not self.activo:
+            with transaction.atomic():
+                es_admin = UsuarioRol.objects.filter(
+                    usuario_id=self.pk,
+                    rol__nombre=Rol.Nombre.ADMIN,
+                ).exists()
+                if es_admin:
+                    otros_admins_activos = (
+                        UsuarioRol.objects.select_for_update()
+                        .filter(
+                            rol__nombre=Rol.Nombre.ADMIN,
+                            usuario__activo=True,
+                        )
+                        .exclude(usuario_id=self.pk)
+                        .count()
+                    )
+                    if otros_admins_activos == 0:
+                        raise ValidationError(
+                            "No se puede desactivar la cuenta porque el sistema "
+                            "debe mantener al menos un Administrador activo."
+                        )
+                super().save(*args, **kwargs)
+            return
+
+        # Paso 3: guardar normalmente cuando no compromete al último ADMIN activo.
         super().save(*args, **kwargs)
 
     @property
@@ -295,6 +322,47 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
 # ---------------------------------------------------------------------------
 # TABLAS INTERMEDIAS (RELACIONES N:M)
 # ---------------------------------------------------------------------------
+class UsuarioRolQuerySet(models.QuerySet):
+    """QuerySet personalizado que protege la integridad del último ADMIN activo."""
+
+    def delete(self):
+        """Impide eliminar en lote el rol ADMIN si deja al sistema sin admins activos."""
+        # Paso 1: bloquear dentro de una transacción las filas ADMIN activas afectadas.
+        with transaction.atomic():
+            admins_a_borrar = list(
+                self.select_for_update().filter(
+                    rol__nombre=Rol.Nombre.ADMIN,
+                    usuario__activo=True,
+                )
+            )
+            # Paso 2: si se intenta borrar al menos un ADMIN activo, validar que queden otros.
+            if admins_a_borrar:
+                ids_afectados = {ur.usuario_id for ur in admins_a_borrar}
+                admins_restantes = (
+                    UsuarioRol.objects.select_for_update()
+                    .filter(
+                        rol__nombre=Rol.Nombre.ADMIN,
+                        usuario__activo=True,
+                    )
+                    .exclude(usuario_id__in=ids_afectados)
+                    .count()
+                )
+                if admins_restantes == 0:
+                    raise ValidationError(
+                        "No se puede revocar el rol de Administrador porque el "
+                        "sistema debe mantener al menos un Administrador activo."
+                    )
+            # Paso 3: ejecutar el borrado en la base de datos.
+            return super().delete()
+
+
+class UsuarioRolManager(models.Manager):
+    """Manager de UsuarioRol que aplica las reglas de integridad de UsuarioRolQuerySet."""
+
+    def get_queryset(self):
+        return UsuarioRolQuerySet(self.model, using=self._db)
+
+
 class UsuarioRol(models.Model):
     """
     Tabla intermedia entre usuario y rol (tabla "usuario_rol").
@@ -308,6 +376,8 @@ class UsuarioRol(models.Model):
 
     # on_delete=PROTECT: impide borrar un rol mientras algún usuario lo tenga.
     rol = models.ForeignKey(Rol, on_delete=models.PROTECT)
+
+    objects = UsuarioRolManager()
 
     class Meta:
         db_table = "usuario_rol"
@@ -323,6 +393,27 @@ class UsuarioRol(models.Model):
     def __str__(self):
         return f"{self.usuario.correo} → {self.rol}"
 
+    def delete(self, *args, **kwargs):
+        """Impide eliminar individualmente el rol ADMIN del último administrador activo."""
+        # Paso 1: verificar dentro de una transacción si es un ADMIN activo.
+        with transaction.atomic():
+            if self.rol.nombre == Rol.Nombre.ADMIN and self.usuario.activo:
+                otros_admins_activos = (
+                    UsuarioRol.objects.select_for_update()
+                    .filter(
+                        rol__nombre=Rol.Nombre.ADMIN,
+                        usuario__activo=True,
+                    )
+                    .exclude(usuario_id=self.usuario_id)
+                    .count()
+                )
+                if otros_admins_activos == 0:
+                    raise ValidationError(
+                        "No se puede revocar el rol de Administrador porque el "
+                        "sistema debe mantener al menos un Administrador activo."
+                    )
+            # Paso 2: eliminar el registro en la base de datos.
+            return super().delete(*args, **kwargs)
 
 class Especialidad(models.Model):
     """

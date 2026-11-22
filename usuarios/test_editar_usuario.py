@@ -8,13 +8,14 @@ Cubre los criterios de aceptación del endpoint PUT/PATCH /api/usuarios/{id}/:
 - Restricción para que COMITE no asigne ni revoque el rol ADMIN (400).
 """
 
+from django.core.exceptions import ValidationError
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from core.models import LineaTematica
 
-from .models import Rol, Usuario
+from .models import Rol, Usuario, UsuarioRol
 
 
 class EditarUsuarioAdminTests(APITestCase):
@@ -251,3 +252,23 @@ class EditarUsuarioAdminTests(APITestCase):
         # Verificar
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("correo", respuesta.data)
+
+    def test_bd_impide_revocar_rol_al_unico_admin_activo(self):
+        """La capa de modelo rechaza eliminar el rol ADMIN si es el único activo en BD."""
+        # Preparar
+        relacion_admin = UsuarioRol.objects.get(
+            usuario=self.admin, rol=self.rol_admin
+        )
+
+        # Ejecutar y Verificar
+        with self.assertRaises(ValidationError):
+            relacion_admin.delete()
+
+    def test_bd_impide_desactivar_al_unico_admin_activo(self):
+        """La capa de modelo rechaza desactivar en BD al único administrador activo."""
+        # Preparar
+        self.admin.activo = False
+
+        # Ejecutar y Verificar
+        with self.assertRaises(ValidationError):
+            self.admin.save()
