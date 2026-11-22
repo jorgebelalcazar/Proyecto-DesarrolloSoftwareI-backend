@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt",  # Tokens JWT; se registra para usar sus mensajes en español
     "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
     "django_filters",
+    "articulos",  # Gestión y postulación de artículos científicos (HU-14)
 ]
 
 # Modelo de usuario propio del proyecto.
