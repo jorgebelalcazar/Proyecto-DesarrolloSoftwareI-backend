@@ -4,7 +4,7 @@ Configuración del panel administrativo para el dominio de artículos.
 
 from django.contrib import admin
 
-from .models import Articulo
+from .models import Articulo, HistorialEstado
 
 
 @admin.register(Articulo)
@@ -21,3 +21,19 @@ class ArticuloAdmin(admin.ModelAdmin):
     )
     list_filter = ("estado", "linea_tematica")
     search_fields = ("titulo", "palabras_clave", "autor_responsable__correo")
+    
+
+@admin.register(HistorialEstado)
+class HistorialEstadoAdmin(admin.ModelAdmin):
+    """Vista administrativa de la trazabilidad de estados de artículos."""
+
+    list_display = (
+        "id",
+        "articulo",
+        "estado_anterior",
+        "estado_nuevo",
+        "usuario",
+        "fecha_cambio",
+    )
+    list_filter = ("estado_nuevo",)
+    search_fields = ("articulo__titulo", "usuario__correo")

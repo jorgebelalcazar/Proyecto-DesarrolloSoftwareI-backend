@@ -74,3 +74,51 @@ class Articulo(models.Model):
 
     def __str__(self):
         return f"{self.titulo} ({self.get_estado_display()})"
+
+
+# ---------------------------------------------------------------------------
+# HISTORIAL DE ESTADOS DEL ARTÍCULO
+# ---------------------------------------------------------------------------
+class HistorialEstado(models.Model):
+    """
+    Registro de trazabilidad de cambios de estado de un artículo (tabla "historial_estado").
+
+    Cada vez que un artículo nace en POSTULADO (HU-14.2) o cambia de estado
+    en etapas posteriores, se guarda una fila con quién realizó el cambio y cuándo.
+    """
+
+    articulo = models.ForeignKey(
+        Articulo,
+        on_delete=models.CASCADE,
+        related_name="historial_estados",
+        verbose_name="artículo",
+    )
+    estado_anterior = models.CharField(
+        "estado anterior",
+        max_length=20,
+        choices=Articulo.Estado.choices,
+        blank=True,
+    )
+    estado_nuevo = models.CharField(
+        "estado nuevo",
+        max_length=20,
+        choices=Articulo.Estado.choices,
+    )
+    usuario = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="cambios_estado_articulo",
+        verbose_name="usuario responsable",
+    )
+    observacion = models.TextField("observación", blank=True)
+    fecha_cambio = models.DateTimeField("fecha de cambio", auto_now_add=True)
+
+    class Meta:
+        db_table = "historial_estado"
+        verbose_name = "historial de estado"
+        verbose_name_plural = "historial de estados"
+        ordering = ["fecha_cambio", "id"]
+
+    def __str__(self):
+        origen = self.estado_anterior or "INICIO"
+        return f"Artículo #{self.articulo_id}: {origen} -> {self.estado_nuevo}"

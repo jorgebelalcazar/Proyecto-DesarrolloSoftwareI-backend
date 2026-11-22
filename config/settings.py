@@ -227,3 +227,10 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Nexo <no-responder@nexo.lo
 # Sin este límite, un servidor SMTP caído dejaría la petición esperando.
 EMAIL_TIMEOUT = 10
 
+
+# ---------------------------------------------------------------------------
+# Convocatoria y postulación de artículos (HU-14.2)
+# ---------------------------------------------------------------------------
+# Fecha límite de postulaciones en formato ISO 8601 (ej. "2026-12-31T23:59:59-05:00").
+# Si está vacía, no bloquea por fecha mientras se integra la configuración dinámica (HU-13).
+FECHA_LIMITE_POSTULACION = os.getenv("FECHA_LIMITE_POSTULACION", "")

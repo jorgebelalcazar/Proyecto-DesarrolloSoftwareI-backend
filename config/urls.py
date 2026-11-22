@@ -26,4 +26,7 @@ urlpatterns = [
 
     # Autenticación: login, renovación de tokens y sesión (HU-03).
     path("api/auth/", include("autenticacion.urls")),
+
+    # Gestión y postulación de artículos científicos (HU-14).
+    path("api/articulos/", include("articulos.urls")),
 ]
