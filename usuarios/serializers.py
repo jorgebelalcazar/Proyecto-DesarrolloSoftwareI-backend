@@ -32,6 +32,10 @@ from .permisos import obtener_rol_activo
 # Mensaje reutilizado: en la validación del correo y cuando la base de datos
 # rechaza un correo duplicado.
 MENSAJE_CORREO_DUPLICADO = "Ya existe una cuenta registrada con este correo."
+MENSAJE_ULTIMO_ADMIN = (
+    "No se puede quitar el rol de Administrador ni desactivar la cuenta porque "
+    "el sistema debe mantener al menos un Administrador activo."
+)
 
 
 # ===========================================================================
@@ -458,5 +462,185 @@ class PerfilUsuarioSerializer(serializers.ModelSerializer):
                 Especialidad.objects.filter(usuario=instance).delete()
                 for linea in especialidades:
                     Especialidad.objects.create(usuario=instance, linea_tematica=linea)
+
+        return instance
+
+
+# ===========================================================================
+# HU-11: EDITAR USUARIO ADMINISTRATIVAMENTE (PUT/PATCH /api/usuarios/{id}/)
+# ===========================================================================
+class EditarUsuarioAdminSerializer(serializers.ModelSerializer):
+    """
+    Edición administrativa de cualquier usuario registrado (HU-11).
+
+    Permite a un Administrador o Miembro del Comité modificar datos básicos,
+    estado de la cuenta ('activo'), roles en USUARIO_ROL y especialidades
+    temáticas en ESPECIALIDAD.
+
+    Reglas de negocio validadas en el servidor:
+    - El correo debe seguir siendo único entre los demás usuarios.
+    - Debe asignarse al menos un rol.
+    - Un miembro del Comité no puede asignar ni revocar el rol ADMIN.
+    - Las especialidades solo aplican si el usuario tiene el rol COMITE.
+    - No se permite dejar al sistema sin al menos un Administrador activo.
+    """
+
+    roles = serializers.SlugRelatedField(
+        many=True,
+        slug_field="nombre",
+        queryset=Rol.objects.all(),
+    )
+    especialidades = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=LineaTematica.objects.all(),
+        required=False,
+        write_only=True,
+    )
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id",
+            "correo",
+            "nombres",
+            "apellidos",
+            "tipo_documento",
+            "numero_documento",
+            "afiliacion",
+            "pais",
+            "telefono",
+            "activo",
+            "roles",
+            "especialidades",
+            "fecha_registro",
+            "fecha_desactivacion",
+        ]
+        read_only_fields = ["id", "fecha_registro", "fecha_desactivacion"]
+        extra_kwargs = {"correo": {"validators": []}}
+        validators = []
+
+    def validate_correo(self, valor):
+        """Normaliza el correo y valida que no pertenezca a otro usuario."""
+        correo = valor.strip().lower()
+        existe_otro = (
+            Usuario.objects.filter(correo__iexact=correo)
+            .exclude(pk=self.instance.pk)
+            .exists()
+        )
+        if existe_otro:
+            raise serializers.ValidationError(MENSAJE_CORREO_DUPLICADO)
+        return correo
+
+    def validate_roles(self, roles):
+        """Valida la lista de roles asignados."""
+        # Paso 1: exigir al menos un rol.
+        if not roles:
+            raise serializers.ValidationError("Debe asignar al menos un rol.")
+
+        # Paso 2: eliminar duplicados conservando el orden.
+        roles = list(dict.fromkeys(roles))
+
+        # Paso 3: impedir que un miembro del comité asigne o revoque ADMIN.
+        rol_activo = obtener_rol_activo(self.context["request"])
+        nombres_nuevos = {rol.nombre for rol in roles}
+        nombres_actuales = set(
+            self.instance.roles.values_list("nombre", flat=True)
+        )
+        if rol_activo == Rol.Nombre.COMITE:
+            tenia_admin = Rol.Nombre.ADMIN in nombres_actuales
+            tendra_admin = Rol.Nombre.ADMIN in nombres_nuevos
+            if tenia_admin != tendra_admin:
+                raise serializers.ValidationError(
+                    "Un miembro del comité no puede asignar ni revocar el rol de Administrador."
+                )
+
+        return roles
+
+    def validate(self, datos):
+        """Valida coherencia de especialidades y permanencia de al menos un ADMIN activo."""
+        # Paso 1: determinar los roles y el estado activo resultantes (soporta PUT y PATCH).
+        roles_resultantes = datos.get("roles")
+        if roles_resultantes is not None:
+            nombres_resultantes = {rol.nombre for rol in roles_resultantes}
+        else:
+            nombres_resultantes = set(
+                self.instance.roles.values_list("nombre", flat=True)
+            )
+
+        activo_resultante = datos.get("activo", self.instance.activo)
+
+        # Paso 2: validar que las especialidades solo se asignen a miembros del comité.
+        especialidades = datos.get("especialidades")
+        if especialidades and Rol.Nombre.COMITE not in nombres_resultantes:
+            raise serializers.ValidationError(
+                {
+                    "especialidades": [
+                        "Las especialidades solo aplican a los miembros del comité científico."
+                    ]
+                }
+            )
+
+        # Paso 3: validar que el sistema no quede sin al menos un Administrador activo.
+        era_admin_activo = (
+            self.instance.activo
+            and self.instance.roles.filter(nombre=Rol.Nombre.ADMIN).exists()
+        )
+        seguira_admin_activo = (
+            activo_resultante and (Rol.Nombre.ADMIN in nombres_resultantes)
+        )
+
+        if era_admin_activo and not seguira_admin_activo:
+            otros_admins_activos = (
+                Usuario.objects.filter(
+                    activo=True,
+                    roles__nombre=Rol.Nombre.ADMIN,
+                )
+                .exclude(pk=self.instance.pk)
+                .distinct()
+                .count()
+            )
+            if otros_admins_activos == 0:
+                raise serializers.ValidationError({"roles": [MENSAJE_ULTIMO_ADMIN]})
+
+        return datos
+
+    def to_representation(self, instance):
+        """Devuelve las especialidades en formato [{id, nombre}, ...]."""
+        datos = super().to_representation(instance)
+        datos["especialidades"] = LineaTematicaSerializer(
+            instance.especialidades.all(), many=True
+        ).data
+        return datos
+
+    def update(self, instance, validated_data):
+        """Actualiza datos básicos, estado, roles y especialidades en una transacción."""
+        roles = validated_data.pop("roles", None)
+        especialidades = validated_data.pop("especialidades", None)
+
+        try:
+            with transaction.atomic():
+                # Paso 1: actualizar campos directos del modelo Usuario.
+                instance = super().update(instance, validated_data)
+
+                # Paso 2: sincronizar roles en USUARIO_ROL si fueron enviados.
+                if roles is not None:
+                    UsuarioRol.objects.filter(usuario=instance).delete()
+                    for rol in roles:
+                        UsuarioRol.objects.create(usuario=instance, rol=rol)
+
+                    # Si deja de tener rol COMITE y no se enviaron especialidades, limpiarlas.
+                    nombres_roles = {rol.nombre for rol in roles}
+                    if Rol.Nombre.COMITE not in nombres_roles and especialidades is None:
+                        Especialidad.objects.filter(usuario=instance).delete()
+
+                # Paso 3: sincronizar especialidades en ESPECIALIDAD si fueron enviadas.
+                if especialidades is not None:
+                    Especialidad.objects.filter(usuario=instance).delete()
+                    for linea in especialidades:
+                        Especialidad.objects.create(
+                            usuario=instance, linea_tematica=linea
+                        )
+        except IntegrityError:
+            raise serializers.ValidationError({"correo": [MENSAJE_CORREO_DUPLICADO]})
 
         return instance

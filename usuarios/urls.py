@@ -8,7 +8,7 @@ agregarán sus rutas en esta misma lista.
 
 from django.urls import path
 
-from .views import CrearUsuarioView, ListarUsuariosView, RegistroAutorView, MiPerfilView
+from .views import CrearUsuarioView, ListarUsuariosView, RegistroAutorView, MiPerfilView, EditarUsuarioAdminView
 
 # Espacio de nombres: permite referirse a las rutas como "usuarios:registro-autor",
 # sin escribir la dirección completa (se usa en las pruebas con reverse).
@@ -23,6 +23,9 @@ urlpatterns = [
 
     # GET/PATCH /api/usuarios/mi-perfil/   (HU-10)
     path("mi-perfil/", MiPerfilView.as_view(), name="mi-perfil"),
+
+    # PUT/PATCH /api/usuarios/{id}/   (HU-11) Edición administrativa de terceros.
+    path("<int:pk>/", EditarUsuarioAdminView.as_view(), name="editar-usuario"),
 
     # GET /api/usuarios/   (HU-08) Directorio paginado; los campos dependen del rol activo.
     path("", ListarUsuariosView.as_view(), name="listar"),

@@ -14,9 +14,10 @@ from django_filters.rest_framework import DjangoFilterBackend
 from .filters import UsuarioFilter
 
 from .models import Rol, Usuario
-from .permisos import IsAdminOrComitePermission, obtener_rol_activo
+from .permisos import IsAdminOrComitePermission, obtener_rol_activo, RequiereRolActivo
 from .serializers import (
     CrearUsuarioSerializer,
+    EditarUsuarioAdminSerializer,
     PerfilUsuarioSerializer,
     RegistroAutorSerializer,
     UsuarioDirectorioGestionSerializer,
@@ -162,3 +163,30 @@ class MiPerfilView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user
+
+
+class EditarUsuarioAdminView(generics.UpdateAPIView):
+    """
+    PUT/PATCH /api/usuarios/{id}/   (HU-11)
+
+    Permite a un Administrador o Miembro del Comité científico actualizar
+    los datos personales, estado de cuenta, roles y especialidades de
+    cualquier usuario registrado en la conferencia.
+
+    Requiere:
+    - Token JWT en el encabezado Authorization.
+    - Rol activo ADMIN o COMITE (encabezado X-Rol-Activo).
+
+    Respuestas:
+    - 200 OK:           usuario actualizado; devuelve sus datos completos sin clave.
+    - 400 Bad Request:  datos inválidos o intento de dejar al sistema sin ADMIN activo.
+    - 401 Unauthorized: no se envió un token válido.
+    - 403 Forbidden:    el rol activo no es ADMIN ni COMITE.
+    - 404 Not Found:    el usuario indicado por {id} no existe.
+    """
+
+    serializer_class = EditarUsuarioAdminSerializer
+    queryset = Usuario.objects.prefetch_related("roles", "especialidades").all()
+    permission_classes = [RequiereRolActivo]
+    roles_permitidos = [Rol.Nombre.ADMIN, Rol.Nombre.COMITE]
+    http_method_names = ["put", "patch", "head", "options"]
