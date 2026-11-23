@@ -8,7 +8,7 @@ from rest_framework import serializers
 from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
 
-from .models import Articulo, HistorialEstado
+from .models import Articulo, HistorialEstado, AutorArticulo
 from .servicios import validar_plazo_postulacion_abierto
 
 MAX_PALABRAS_RESUMEN = 300
@@ -130,3 +130,144 @@ class CrearArticuloSerializer(serializers.ModelSerializer):
             instance.linea_tematica
         ).data
         return datos
+
+# ---------------------------------------------------------------------------
+# COAUTORES / FIRMANTES DEL ARTÍCULO (HU-15.2)
+# ---------------------------------------------------------------------------
+def validar_lista_coautores(coautores):
+    """
+    Valida una lista de coautores/firmantes para un artículo:
+    - Asigna orden_firma consecutivo (1, 2, 3...) si no viene explícito.
+    - Impide correos electrónicos duplicados dentro del mismo artículo.
+    - Impide posiciones orden_firma duplicadas en la misma lista.
+    """
+    correos_vistos = set()
+    ordenes_vistos = set()
+
+    for indice, firmante in enumerate(coautores, start=1):
+        correo = firmante["correo"].strip().lower()
+        firmante["correo"] = correo
+
+        if correo in correos_vistos:
+            raise serializers.ValidationError(
+                f"El correo '{correo}' está duplicado dentro del mismo artículo."
+            )
+        correos_vistos.add(correo)
+
+        orden = firmante.get("orden_firma") or indice
+        if orden in ordenes_vistos:
+            raise serializers.ValidationError(
+                f"El orden de firma {orden} está repetido entre los coautores."
+            )
+        ordenes_vistos.add(orden)
+        firmante["orden_firma"] = orden
+
+    return coautores
+
+
+def sincronizar_coautores_articulo(articulo, coautores_validados):
+    """
+    Reemplaza/actualiza transaccionalmente la lista de coautores de un artículo
+    garantizando que el orden de firma y los correos queden sin conflictos.
+    """
+    with transaction.atomic():
+        articulo.coautores.all().delete()
+        instancias = [
+            AutorArticulo(
+                articulo=articulo,
+                nombre_completo=firmante["nombre_completo"],
+                afiliacion=firmante["afiliacion"],
+                correo=firmante["correo"],
+                orden_firma=firmante["orden_firma"],
+            )
+            for firmante in coautores_validados
+        ]
+        AutorArticulo.objects.bulk_create(instancias)
+
+    return list(articulo.coautores.all())
+
+
+class AutorArticuloSerializer(serializers.ModelSerializer):
+    """
+    Serializador de un coautor/firmante de artículo (HU-15.2).
+
+    Valida nombre completo, afiliación institucional, formato de correo electrónico
+    y orden de firma sin requerir que exista cuenta en Usuario.
+    """
+
+    orden_firma = serializers.IntegerField(min_value=1, required=False)
+
+    class Meta:
+        model = AutorArticulo
+        fields = [
+            "id",
+            "nombre_completo",
+            "afiliacion",
+            "correo",
+            "orden_firma",
+        ]
+        read_only_fields = ["id"]
+
+    def validate_nombre_completo(self, valor):
+        """Verifica que el nombre completo no sea solo espacios."""
+        limpio = valor.strip()
+        if not limpio:
+            raise serializers.ValidationError("El nombre completo es obligatorio.")
+        return limpio
+
+    def validate_afiliacion(self, valor):
+        """Verifica que la afiliación institucional no sea solo espacios."""
+        limpio = valor.strip()
+        if not limpio:
+            raise serializers.ValidationError(
+                "La afiliación institucional es obligatoria."
+            )
+        return limpio
+
+    def validate_correo(self, valor):
+        """Normaliza el correo electrónico en minúsculas tras validar su formato."""
+        return valor.strip().lower()
+
+
+class GestionCoautoresArticuloSerializer(serializers.Serializer):
+    """
+    Serializador anidado para agregar, ordenar y editar los coautores/firmantes
+    de un artículo de forma transaccional (HU-15.2).
+    """
+
+    coautores = AutorArticuloSerializer(many=True, allow_empty=False)
+
+    def validate_coautores(self, coautores):
+        """Valida unicidad de correos y orden de firma dentro del artículo."""
+        return validar_lista_coautores(coautores)
+
+    def validate(self, attrs):
+        """Verifica que el artículo esté editable y dentro del plazo vigente."""
+        articulo = self.context["articulo"]
+        if articulo.estado == Articulo.Estado.DESHABILITADO:
+            raise serializers.ValidationError(
+                {
+                    "estado": [
+                        "No se pueden modificar los coautores de un artículo deshabilitado."
+                    ]
+                }
+            )
+        validar_plazo_postulacion_abierto()
+        return attrs
+
+    def save(self, **kwargs):
+        """Guarda de forma atómica los coautores validados en AUTOR_ARTICULO."""
+        articulo = self.context["articulo"]
+        coautores_actualizados = sincronizar_coautores_articulo(
+            articulo, self.validated_data["coautores"]
+        )
+        return {"articulo_id": articulo.id, "coautores": coautores_actualizados}
+
+    def to_representation(self, instance):
+        """Devuelve el identificador del artículo y su lista ordenada de firmantes."""
+        return {
+            "articulo_id": instance["articulo_id"],
+            "coautores": AutorArticuloSerializer(
+                instance["coautores"], many=True
+            ).data,
+        }
