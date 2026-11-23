@@ -11,8 +11,9 @@ from rest_framework.permissions import AllowAny
 
 from core.paginacion import PaginacionEstandar
 
+from .excepciones import BajaNoPermitida
 from .filters import BusquedaDirectorio, UsuarioFilter
-from .models import Rol, Usuario
+from .models import Rol, SinAdministradorActivo, Usuario
 from .permisos import (
     ComiteNoModificaAdministradores,
     IsAdminOrComitePermission,
@@ -195,44 +196,71 @@ class MiPerfilView(generics.RetrieveUpdateAPIView):
         return self.request.user
 
 
-class GestionUsuarioView(generics.RetrieveUpdateAPIView):
+class GestionUsuarioView(generics.RetrieveUpdateDestroyAPIView):
     """
-    GET y PATCH /api/usuarios/{id}/   (HU-11)
+    GET, PATCH y DELETE /api/usuarios/{id}/   (HU-11 y HU-12)
 
-    Permite que el Administrador o el Comité consulten y editen la cuenta de
-    cualquier usuario: datos personales, roles y especialidades.
-    El GET sirve para que el formulario de edición cargue los datos actuales.
+    Permite que el Administrador o el Comité gestionen la cuenta de
+    cualquier usuario:
+      - GET (HU-11):    consultar sus datos, para cargar el formulario.
+      - PATCH (HU-11):  editar datos personales, roles y especialidades.
+      - DELETE (HU-12): desactivar la cuenta (baja lógica). La fila NO se
+                        borra: queda activo=False con su fecha de desactivación.
 
     Requiere:
       - Token JWT en el encabezado Authorization.
       - Rol activo ADMIN o COMITE (encabezado X-Rol-Activo).
 
     Respuestas:
-      - 200 OK:           los datos de la cuenta (también después de editarlos).
-      - 400 Bad Request:  un campo inválido o no editable (activo, clave...),
-                          el Comité intenta asignar ADMIN o cambiar el correo,
-                          o se quitaría el último Administrador activo.
+      - 200 OK:           GET y PATCH; los datos de la cuenta.
+      - 204 No Content:   DELETE; la cuenta quedó desactivada.
+      - 400 Bad Request:  PATCH con un campo inválido o no editable; DELETE de
+                          la propia cuenta, de una cuenta ya desactivada o del
+                          último Administrador activo.
       - 401 Unauthorized: no se envió un token válido.
       - 403 Forbidden:    el rol activo no es ADMIN ni COMITE, o el Comité
-                          intenta modificar la cuenta de un Administrador.
+                          intenta modificar o desactivar a un Administrador.
       - 404 Not Found:    no existe un usuario con ese id.
       - 405 Method Not Allowed: PUT; la edición es parcial (PATCH).
-
-    La HU-12 agregará aquí mismo el método DELETE (desactivar la cuenta),
-    porque usa la misma ruta /api/usuarios/{id}/ y los mismos permisos.
     """
 
     serializer_class = GestionUsuarioSerializer
 
     # prefetch_related carga los roles y las especialidades con la consulta
     # del usuario, en lugar de una consulta adicional por cada relación.
+    # Incluye a los desactivados: el GET debe poder mostrarlos.
     queryset = Usuario.objects.prefetch_related("roles", "especialidades")
 
     # Dos permisos, se revisan en orden:
     #   1. IsAdminOrComitePermission: rol activo ADMIN o COMITE (antes de buscar al usuario).
     #   2. ComiteNoModificaAdministradores: con el usuario ya encontrado, el
-    #      Comité no modifica cuentas de Administradores.
+    #      Comité no modifica ni desactiva cuentas de Administradores.
     permission_classes = [IsAdminOrComitePermission, ComiteNoModificaAdministradores]
 
-    # Solo PATCH (edición parcial): se envía únicamente lo que cambia.
-    http_method_names = ["get", "patch", "head", "options"]
+    # PATCH (edición parcial) y DELETE (baja lógica). Sin PUT.
+    http_method_names = ["get", "patch", "delete", "head", "options"]
+
+    def perform_destroy(self, usuario):
+        """
+        Desactiva la cuenta en lugar de borrarla (HU-12.1).
+
+        DRF llama a este método desde DELETE, después de buscar al usuario y
+        de revisar los permisos. Por defecto ejecutaría usuario.delete(),
+        que borraría la fila; aquí se reemplaza por la baja lógica.
+        Si no lanza un error, DRF responde 204 No Content.
+        """
+        # Paso 1: nadie se desactiva a sí mismo. Evita que un Administrador
+        # o un miembro del Comité se quede por error sin acceso.
+        if usuario.pk == self.request.user.pk:
+            raise BajaNoPermitida("No puede desactivar su propia cuenta.")
+
+        # Paso 2: una cuenta desactivada no se vuelve a desactivar; así se
+        # conserva la fecha original de la baja.
+        if not usuario.activo:
+            raise BajaNoPermitida("La cuenta ya está desactivada.")
+
+        # Paso 3: baja lógica. El modelo verifica que quede un Administrador activo.
+        try:
+            usuario.desactivar()
+        except SinAdministradorActivo as error:
+            raise BajaNoPermitida(error.messages[0])

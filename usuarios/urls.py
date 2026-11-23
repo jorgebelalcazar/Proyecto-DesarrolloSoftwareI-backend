@@ -30,7 +30,8 @@ urlpatterns = [
     # GET y PATCH /api/usuarios/mi-perfil/   (HU-10) Perfil del usuario del token.
     path("mi-perfil/", MiPerfilView.as_view(), name="mi-perfil"),
 
-    # GET y PATCH /api/usuarios/{id}/   (HU-11) Cuenta de otro usuario, para ADMIN y COMITE.
+    # GET, PATCH y DELETE /api/usuarios/{id}/   (HU-11 y HU-12) Cuenta de otro
+    # usuario, para ADMIN y COMITE. DELETE es una baja lógica: no borra la fila.
     # <int:pk> solo acepta números: /api/usuarios/abc/ responde 404.
     path("<int:pk>/", GestionUsuarioView.as_view(), name="gestion"),
 

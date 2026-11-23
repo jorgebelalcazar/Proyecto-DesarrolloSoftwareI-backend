@@ -295,12 +295,46 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
         # get_or_create busca primero; si no encuentra, crea.
         UsuarioRol.objects.get_or_create(usuario=self, rol=rol)
 
+    def desactivar(self):
+        """
+        Baja lógica de la cuenta (HU-12.1).
+
+        No borra la fila: marca activo=False y guarda la fecha de la baja.
+        Así se conservan su historial, sus roles y, más adelante, sus
+        artículos y evaluaciones.
+
+        Desde ese momento la cuenta:
+          - no puede iniciar sesión (authenticate revisa is_active);
+          - pierde el acceso aunque ya tuviera tokens: Simple JWT revisa
+            is_active en cada petición y al renovar el token;
+          - no puede recuperar la clave (HU-06 y HU-07 buscan cuentas activas);
+          - deja de aparecer en el directorio para los autores (HU-08).
+
+        Lanza SinAdministradorActivo si es el último Administrador activo.
+        """
+        with transaction.atomic():
+            # Paso 1: si es Administrador, verificar que quede otro activo.
+            # La verificación toma el candado de la regla: si dos
+            # administradores se desactivan entre sí al mismo tiempo, la
+            # segunda petición espera y es rechazada.
+            if self.tiene_rol(Rol.Nombre.ADMIN):
+                verificar_que_quede_un_admin({self.pk}, MENSAJE_ULTIMO_ADMIN_BAJA)
+
+            # Paso 2: baja lógica. update_fields guarda solo estas dos columnas.
+            self.activo = False
+            self.fecha_desactivacion = timezone.now()
+            self.save(update_fields=["activo", "fecha_desactivacion"])
+
 
 # ---------------------------------------------------------------------------
 # REGLA: SIEMPRE DEBE QUEDAR UN ADMINISTRADOR ACTIVO (HU-11.2)
 # ---------------------------------------------------------------------------
 MENSAJE_ULTIMO_ADMIN = (
     "No se puede quitar el rol de Administrador: el sistema debe mantener "
+    "al menos un Administrador activo."
+)
+MENSAJE_ULTIMO_ADMIN_BAJA = (
+    "No se puede desactivar la cuenta: el sistema debe mantener "
     "al menos un Administrador activo."
 )
 
@@ -315,14 +349,15 @@ class SinAdministradorActivo(ValidationError):
     """
 
 
-def verificar_que_quede_un_admin(usuarios_que_salen):
+def verificar_que_quede_un_admin(usuarios_que_salen, mensaje=MENSAJE_ULTIMO_ADMIN):
     """
     Lanza SinAdministradorActivo si, sin los usuarios indicados, no queda
     ningún Administrador activo.
 
     "usuarios_que_salen" son los ids de los usuarios que van a dejar de ser
     Administradores activos (porque se les quita el rol o, en la HU-12,
-    porque se desactiva su cuenta).
+    porque se desactiva su cuenta). "mensaje" es el texto del error, para
+    que diga qué operación se rechazó.
 
     Debe llamarse DENTRO de una transacción (transaction.atomic) y ANTES del
     cambio, para que la verificación y el cambio ocurran juntos.
@@ -348,7 +383,7 @@ def verificar_que_quede_un_admin(usuarios_que_salen):
             .exists()
         )
         if not quedan_otros:
-            raise SinAdministradorActivo(MENSAJE_ULTIMO_ADMIN, code="ultimo_admin")
+            raise SinAdministradorActivo(mensaje, code="ultimo_admin")
 
 
 class UsuarioRolQuerySet(models.QuerySet):
