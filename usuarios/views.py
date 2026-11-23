@@ -5,24 +5,21 @@ Una vista recibe la petición HTTP, usa un serializador para validar los datos
 y devuelve la respuesta en JSON con el código de estado correspondiente.
 """
 
-from rest_framework import generics, filters
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import generics
 from rest_framework.permissions import AllowAny
 
 from core.paginacion import PaginacionEstandar
 
-from django_filters.rest_framework import DjangoFilterBackend
-from .filters import UsuarioFilter
-
+from .filters import BusquedaDirectorio, UsuarioFilter
 from .models import Rol, Usuario
-from .permisos import IsAdminOrComitePermission, obtener_rol_activo, RequiereRolActivo
+from .permisos import IsAdminOrComitePermission, obtener_rol_activo
 from .serializers import (
     CrearUsuarioSerializer,
-    EditarUsuarioAdminSerializer,
     PerfilUsuarioSerializer,
     RegistroAutorSerializer,
     UsuarioDirectorioGestionSerializer,
     UsuarioDirectorioSerializer,
-    
 )
 
 # Roles que gestionan cuentas y por eso ven el directorio completo (HU-08).
@@ -82,7 +79,7 @@ class CrearUsuarioView(generics.CreateAPIView):
 
 class ListarUsuariosView(generics.ListAPIView):
     """
-    GET /api/usuarios/   (HU-08)
+    GET /api/usuarios/   (HU-08 y HU-09)
 
     Directorio paginado de los usuarios registrados en la conferencia.
     Lo pueden consultar todos los roles (enunciado del proyecto), pero cada
@@ -97,8 +94,16 @@ class ListarUsuariosView(generics.ListAPIView):
       - Para un usuario con varios roles, el encabezado X-Rol-Activo; sin él
         recibe la vista de Autor, que es la de menor privilegio.
 
+    Filtros y búsqueda (HU-09), combinables entre sí y con la paginación:
+      - ?rol=COMITE           ADMIN, COMITE o AUTOR.
+      - ?especialidad=1       id de una línea temática.
+      - ?estado=false         true (activos) o false (desactivados).
+      - ?search=valle         texto en nombres, apellidos y afiliación; para
+                              ADMIN y COMITE, también en el correo.
+
     Respuestas:
       - 200 OK:           página de usuarios (count, next, previous, results).
+      - 400 Bad Request:  un filtro con un valor que no existe (?rol=SUPERADMIN).
       - 401 Unauthorized: no se envió un token válido.
       - 403 Forbidden:    X-Rol-Activo indica un rol que el usuario no tiene.
 
@@ -108,9 +113,17 @@ class ListarUsuariosView(generics.ListAPIView):
     """
 
     pagination_class = PaginacionEstandar
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+
+    # Filtros exactos (HU-09.1) y búsqueda por texto (HU-09.2).
+    filter_backends = [DjangoFilterBackend, BusquedaDirectorio]
     filterset_class = UsuarioFilter
-    search_fields = ["nombres", "apellidos", "correo", "afiliacion"]
+
+    # Campos de la búsqueda para todos los roles.
+    search_fields = ["nombres", "apellidos", "afiliacion"]
+
+    # Campos que se agregan a la búsqueda solo para ADMIN y COMITE: un Autor
+    # no ve los correos, así que tampoco puede buscar por ellos.
+    search_fields_gestion = ["correo"]
 
     def es_gestor(self):
         """Indica si el rol activo de la petición es ADMIN o COMITE."""
@@ -146,47 +159,31 @@ class ListarUsuariosView(generics.ListAPIView):
 
 class MiPerfilView(generics.RetrieveUpdateAPIView):
     """
-    GET/PATCH /api/usuarios/mi-perfil/   (HU-10)
+    GET y PATCH /api/usuarios/mi-perfil/   (HU-10)
 
-    Permite a cualquier usuario autenticado (Administrador, Comité o Autor)
-    consultar y editar sus propios datos personales.
+    Permite que cualquier usuario (Administrador, Comité o Autor) consulte y
+    edite sus propios datos personales.
 
-    Operación estricta: sobreescribe get_object() para retornar siempre
-    self.request.user, impidiendo leer o editar cuentas ajenas.
+    Siempre trabaja sobre el usuario del token (get_object devuelve
+    request.user): la ruta no recibe un id, así que no hay forma de pedir
+    o modificar el perfil de otra persona.
 
-    Permisos: no se declara permission_classes para mantener los validadores
-    globales de settings.py (IsAuthenticated y validador de rol activo).
+    Respuestas:
+      - 200 OK:           los datos del perfil (también después de editarlos).
+      - 400 Bad Request:  un campo inválido o que no se puede editar (roles,
+                          activo, correo, clave...), o especialidades sin ser del comité.
+      - 401 Unauthorized: no se envió un token válido.
+      - 405 Method Not Allowed: PUT o DELETE; la edición es parcial (PATCH).
+
+    Permisos: no se declara permission_classes, para usar los de settings.py
+    (IsAuthenticated y el validador global del rol activo).
     """
 
     serializer_class = PerfilUsuarioSerializer
+
+    # Solo PATCH (edición parcial): el usuario envía únicamente lo que cambia.
     http_method_names = ["get", "patch", "head", "options"]
 
     def get_object(self):
+        """El perfil es siempre el del usuario que hace la petición."""
         return self.request.user
-
-
-class EditarUsuarioAdminView(generics.UpdateAPIView):
-    """
-    PUT/PATCH /api/usuarios/{id}/   (HU-11)
-
-    Permite a un Administrador o Miembro del Comité científico actualizar
-    los datos personales, estado de cuenta, roles y especialidades de
-    cualquier usuario registrado en la conferencia.
-
-    Requiere:
-    - Token JWT en el encabezado Authorization.
-    - Rol activo ADMIN o COMITE (encabezado X-Rol-Activo).
-
-    Respuestas:
-    - 200 OK:           usuario actualizado; devuelve sus datos completos sin clave.
-    - 400 Bad Request:  datos inválidos o intento de dejar al sistema sin ADMIN activo.
-    - 401 Unauthorized: no se envió un token válido.
-    - 403 Forbidden:    el rol activo no es ADMIN ni COMITE.
-    - 404 Not Found:    el usuario indicado por {id} no existe.
-    """
-
-    serializer_class = EditarUsuarioAdminSerializer
-    queryset = Usuario.objects.prefetch_related("roles", "especialidades").all()
-    permission_classes = [RequiereRolActivo]
-    roles_permitidos = [Rol.Nombre.ADMIN, Rol.Nombre.COMITE]
-    http_method_names = ["put", "patch", "head", "options"]
