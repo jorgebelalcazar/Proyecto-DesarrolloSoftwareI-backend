@@ -45,8 +45,10 @@ INSTALLED_APPS = [
     "corsheaders",
     "core",
     "usuarios",  # Dominio de usuarios y acceso
-    "rest_framework_simplejwt.token_blacklist",    
     "rest_framework_simplejwt",  # Tokens JWT; se registra para usar sus mensajes en español
+    # Lista negra de tokens de renovación: el logout invalida el token (HU-05).
+    # Crea dos tablas propias; requiere "python manage.py migrate".
+    "rest_framework_simplejwt.token_blacklist",
     "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
     "django_filters",  # Filtros por parámetros en la URL, como ?rol=AUTOR (HU-09)
 ]

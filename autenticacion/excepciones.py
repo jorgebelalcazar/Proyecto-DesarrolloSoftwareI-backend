@@ -39,7 +39,7 @@ class ServicioCaptchaNoDisponible(APIException):
     )
     default_code = "captcha_no_disponible"
 
-    
+
 class ServicioCorreoNoDisponible(APIException):
     """
     El servidor de correo no aceptó el mensaje con el PIN. Responde 503 (HU-06).
@@ -71,3 +71,17 @@ class PinInvalido(APIException):
         "Verifíquelo o solicite uno nuevo."
     )
     default_code = "pin_invalido"
+
+
+class SesionNoValida(APIException):
+    """
+    El token de renovación no sirve para cerrar la sesión. Responde 401 (HU-05).
+
+    Casos: el token está mal formado, venció, ya se usó para cerrar la
+    sesión (está en la lista negra) o es un token de acceso en lugar de
+    uno de renovación. En todos, la sesión ya no se puede usar.
+    """
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    default_detail = "La sesión no es válida, ya venció o ya se cerró."
+    default_code = "sesion_no_valida"
