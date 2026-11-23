@@ -15,7 +15,7 @@ from django.test import TestCase
 from core.models import LineaTematica
 from usuarios.models import Rol, Usuario
 
-from .models import Articulo
+from .models import Articulo, AutorArticulo
 
 
 class ArticuloModelTests(TestCase):
@@ -89,3 +89,78 @@ class ArticuloModelTests(TestCase):
         # Ejecutar y Verificar
         with self.assertRaises(IntegrityError):
             articulo.save()
+
+
+class AutorArticuloModelTests(TestCase):
+    """Pruebas unitarias de la tabla autor_articulo sin FK a Usuario (HU-15.1)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        """Prepara un artículo base para asociar coautores/firmantes."""
+        Rol.objects.get_or_create(nombre=Rol.Nombre.AUTOR)
+        linea = LineaTematica.objects.get_or_create(
+            nombre="Ingeniería de Software"
+        )[0]
+
+        autor = Usuario.objects.create_user(
+            correo="responsable.hu15@conferencia.edu.co",
+            password="Password123",
+            nombres="Carlos",
+            apellidos="Delgado",
+            afiliacion="Universidad del Valle",
+            pais="Colombia",
+        )
+        autor.asignar_rol(Rol.Nombre.AUTOR)
+
+        cls.articulo = Articulo.objects.create(
+            titulo="Arquitectura limpia para plataformas académicas",
+            resumen="Resumen de prueba para coautores.",
+            palabras_clave="arquitectura, software",
+            linea_tematica=linea,
+            autor_responsable=autor,
+        )
+
+    def test_crear_coautor_externo_sin_cuenta_usuario_y_ordenado(self):
+        """Permite registrar firmantes sin FK a Usuario y los ordena por orden_firma."""
+        # Preparar y Ejecutar
+        segundo = AutorArticulo.objects.create(
+            articulo=self.articulo,
+            nombre_completo="María Fernanda Ruiz",
+            afiliacion="Universidad Nacional",
+            correo="mf.ruiz@unal.edu.co",
+            orden_firma=2,
+        )
+        primero = AutorArticulo.objects.create(
+            articulo=self.articulo,
+            nombre_completo="Carlos Enrique Delgado",
+            afiliacion="Universidad del Valle",
+            correo="carlos.delgado@correounivalle.edu.co",
+            orden_firma=1,
+        )
+
+        # Verificar
+        firmantes = list(self.articulo.coautores.all())
+        self.assertEqual([f.id for f in firmantes], [primero.id, segundo.id])
+        self.assertEqual(primero.orden_firma, 1)
+        self.assertEqual(segundo.orden_firma, 2)
+
+    def test_correo_duplicado_en_mismo_articulo_falla_integridad(self):
+        """La base de datos impide repetir correo dentro del mismo artículo."""
+        # Preparar
+        AutorArticulo.objects.create(
+            articulo=self.articulo,
+            nombre_completo="Investigador Uno",
+            afiliacion="Univalle",
+            correo="investigador@univalle.edu.co",
+            orden_firma=1,
+        )
+
+        # Ejecutar y Verificar
+        with self.assertRaises(IntegrityError):
+            AutorArticulo.objects.create(
+                articulo=self.articulo,
+                nombre_completo="Investigador Duplicado",
+                afiliacion="Univalle",
+                correo="investigador@univalle.edu.co",
+                orden_firma=2,
+            )

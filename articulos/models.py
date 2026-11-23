@@ -3,6 +3,8 @@ Modelos del dominio de artículos científicos.
 
 Este archivo define las tablas del módulo de Gestión y Envío de Artículos:
 - articulo: artículos postulados por un autor responsable (HU-14).
+- historial_estado: trazabilidad de cambios de estado de un artículo (HU-14.2).
+- autor_articulo: coautores o firmantes de un artículo sin FK a usuario (HU-15.1).
 """
 
 from django.conf import settings
@@ -122,3 +124,45 @@ class HistorialEstado(models.Model):
     def __str__(self):
         origen = self.estado_anterior or "INICIO"
         return f"Artículo #{self.articulo_id}: {origen} -> {self.estado_nuevo}"
+
+
+# ---------------------------------------------------------------------------
+# COAUTORES / FIRMANTES DEL ARTÍCULO (HU-15)
+# ---------------------------------------------------------------------------
+class AutorArticulo(models.Model):
+    """
+    Coautor o firmante registrado en un artículo científico (tabla "autor_articulo").
+
+    Almacena nombre completo, afiliación institucional, correo electrónico y orden
+    de firma sin requerir que el investigador tenga cuenta en Usuario (HU-15.1).
+    """
+
+    articulo = models.ForeignKey(
+        Articulo,
+        on_delete=models.CASCADE,
+        related_name="coautores",
+        verbose_name="artículo",
+    )
+    nombre_completo = models.CharField("nombre completo", max_length=150)
+    afiliacion = models.CharField("afiliación institucional", max_length=150)
+    correo = models.EmailField("correo electrónico", max_length=254)
+    orden_firma = models.PositiveSmallIntegerField("orden de firma", default=1)
+
+    class Meta:
+        db_table = "autor_articulo"
+        verbose_name = "coautor del artículo"
+        verbose_name_plural = "coautores del artículo"
+        ordering = ["orden_firma", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["articulo", "correo"],
+                name="uniq_autor_articulo_correo",
+            ),
+            models.UniqueConstraint(
+                fields=["articulo", "orden_firma"],
+                name="uniq_autor_articulo_orden_firma",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.orden_firma}. {self.nombre_completo} <{self.correo}>"
