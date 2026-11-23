@@ -13,9 +13,14 @@ from core.paginacion import PaginacionEstandar
 
 from .filters import BusquedaDirectorio, UsuarioFilter
 from .models import Rol, Usuario
-from .permisos import IsAdminOrComitePermission, obtener_rol_activo
+from .permisos import (
+    ComiteNoModificaAdministradores,
+    IsAdminOrComitePermission,
+    obtener_rol_activo,
+)
 from .serializers import (
     CrearUsuarioSerializer,
+    GestionUsuarioSerializer,
     PerfilUsuarioSerializer,
     RegistroAutorSerializer,
     UsuarioDirectorioGestionSerializer,
@@ -157,6 +162,7 @@ class ListarUsuariosView(generics.ListAPIView):
             return UsuarioDirectorioGestionSerializer
         return UsuarioDirectorioSerializer
 
+
 class MiPerfilView(generics.RetrieveUpdateAPIView):
     """
     GET y PATCH /api/usuarios/mi-perfil/   (HU-10)
@@ -187,3 +193,46 @@ class MiPerfilView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         """El perfil es siempre el del usuario que hace la petición."""
         return self.request.user
+
+
+class GestionUsuarioView(generics.RetrieveUpdateAPIView):
+    """
+    GET y PATCH /api/usuarios/{id}/   (HU-11)
+
+    Permite que el Administrador o el Comité consulten y editen la cuenta de
+    cualquier usuario: datos personales, roles y especialidades.
+    El GET sirve para que el formulario de edición cargue los datos actuales.
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo ADMIN o COMITE (encabezado X-Rol-Activo).
+
+    Respuestas:
+      - 200 OK:           los datos de la cuenta (también después de editarlos).
+      - 400 Bad Request:  un campo inválido o no editable (activo, clave...),
+                          el Comité intenta asignar ADMIN o cambiar el correo,
+                          o se quitaría el último Administrador activo.
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es ADMIN ni COMITE, o el Comité
+                          intenta modificar la cuenta de un Administrador.
+      - 404 Not Found:    no existe un usuario con ese id.
+      - 405 Method Not Allowed: PUT; la edición es parcial (PATCH).
+
+    La HU-12 agregará aquí mismo el método DELETE (desactivar la cuenta),
+    porque usa la misma ruta /api/usuarios/{id}/ y los mismos permisos.
+    """
+
+    serializer_class = GestionUsuarioSerializer
+
+    # prefetch_related carga los roles y las especialidades con la consulta
+    # del usuario, en lugar de una consulta adicional por cada relación.
+    queryset = Usuario.objects.prefetch_related("roles", "especialidades")
+
+    # Dos permisos, se revisan en orden:
+    #   1. IsAdminOrComitePermission: rol activo ADMIN o COMITE (antes de buscar al usuario).
+    #   2. ComiteNoModificaAdministradores: con el usuario ya encontrado, el
+    #      Comité no modifica cuentas de Administradores.
+    permission_classes = [IsAdminOrComitePermission, ComiteNoModificaAdministradores]
+
+    # Solo PATCH (edición parcial): se envía únicamente lo que cambia.
+    http_method_names = ["get", "patch", "head", "options"]

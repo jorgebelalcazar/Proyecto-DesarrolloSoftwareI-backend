@@ -17,10 +17,12 @@ Contenido:
   - ValidarRolActivo:            validador global del encabezado (HU-04.2).
   - RequiereRolActivo:           permiso por vista con "roles_permitidos" (HU-04.2).
   - IsAdminOrComitePermission:   permiso para crear usuarios (HU-02.1).
+  - ComiteNoModificaAdministradores: protege las cuentas de los
+                                 Administradores frente al Comité (HU-11).
 """
 
 from django.core.exceptions import ImproperlyConfigured
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from .models import Rol
 
@@ -156,3 +158,34 @@ class IsAdminOrComitePermission(RequiereRolActivo):
     def obtener_roles_permitidos(self, view):
         """Ignora los roles de la vista: este permiso siempre exige ADMIN o COMITE."""
         return set(self.roles_permitidos)
+
+
+class ComiteNoModificaAdministradores(BasePermission):
+    """
+    Impide que un miembro del Comité modifique la cuenta de un Administrador (HU-11).
+
+    Nadie puede actuar sobre una cuenta con más privilegios que el rol con el
+    que trabaja. Si el Comité pudiera editar a un Administrador, podría, por
+    ejemplo, cambiarle el correo por uno propio, pedir el PIN de recuperación
+    (HU-06) y quedarse con su cuenta.
+
+    Es un permiso "de objeto": DRF lo revisa cuando la vista ya encontró al
+    usuario de la ruta (get_object), por eso recibe ese usuario en "obj".
+      - GET (consultar):   permitido; el Comité puede ver los datos.
+      - PATCH (y el DELETE de la HU-12): si el rol activo es COMITE y el
+        usuario de la ruta tiene el rol ADMIN -> 403.
+    """
+
+    message = "Un miembro del comité no puede modificar la cuenta de un Administrador."
+
+    def has_object_permission(self, request, view, obj):
+        # Paso 1: consultar no modifica nada.
+        if request.method in SAFE_METHODS:
+            return True
+
+        # Paso 2: el Comité no modifica cuentas de Administradores.
+        if obtener_rol_activo(request) == Rol.Nombre.COMITE:
+            return not obj.tiene_rol(Rol.Nombre.ADMIN)
+
+        # Paso 3: el Administrador puede modificar cualquier cuenta.
+        return True
