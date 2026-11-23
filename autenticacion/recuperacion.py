@@ -1,12 +1,12 @@
 """
-Servicio de recuperación de clave, paso 1: solicitud del PIN (HU-06.2).
+Servicio de recuperación de clave (HU-06 y HU-07).
 
 Flujo completo de la recuperación:
   1. HU-06 (este archivo): el usuario escribe su correo; si tiene una cuenta
      activa, se genera un PIN de 6 dígitos, se guarda su hash y se le envía
      por correo.
-  2. HU-07: el usuario escribe el PIN y su nueva clave; el sistema verifica
-     el PIN y cambia la clave.
+  2. HU-07 (confirmar_recuperacion): el usuario escribe su correo, el PIN y
+     su nueva clave; si el PIN es válido, se cambia la clave y el PIN queda usado.
 
 La lógica vive aquí, y no en la vista, para que la vista solo reciba la
 petición y responda, y para poder probar estas reglas por separado.
@@ -17,6 +17,7 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
+from django.contrib.auth.hashers import make_password
 from django.core.mail import send_mail
 from django.db import transaction
 from django.template.loader import render_to_string
@@ -121,3 +122,61 @@ def solicitar_recuperacion(correo):
 
         # Paso 5: enviar el PIN. Es la única copia en texto plano.
         enviar_correo_pin(usuario, pin)
+
+def confirmar_recuperacion(correo, pin, clave_nueva):
+    """
+    Verifica el PIN y, si es válido, cambia la clave del usuario (HU-07).
+
+    Devuelve True si la clave se cambió y False si no. Ante cualquier fallo
+    la vista responde el MISMO mensaje, para no revelar si el correo existe
+    ni por qué falló el PIN.
+
+    El PIN se rechaza si:
+      - el correo no corresponde a una cuenta activa;
+      - no hay un código disponible: no se solicitó, ya se usó, venció
+        (15 minutos) o agotó sus 3 intentos;
+      - el PIN no coincide con el hash guardado. En este caso se suma un
+        intento: al tercer error el código queda inutilizable.
+    """
+    # Paso 1: buscar una cuenta ACTIVA con ese correo.
+    usuario = Usuario.objects.filter(correo__iexact=correo.strip(), activo=True).first()
+    if usuario is None:
+        # Se calcula un hash igual, para que la respuesta tarde lo mismo que
+        # cuando la cuenta existe y no revele qué correos están registrados.
+        make_password(pin)
+        return False
+
+    with transaction.atomic():
+        # Paso 2: tomar el código más reciente que no se ha usado.
+        # select_for_update bloquea la fila hasta terminar la transacción:
+        # si llegan dos peticiones al mismo tiempo con el mismo PIN, la
+        # segunda espera y encuentra el código ya usado. Así un PIN no se
+        # puede usar dos veces.
+        codigo = (
+            CodigoRecuperacion.objects.select_for_update()
+            .filter(usuario=usuario, usado=False)
+            .order_by("-creado_en")
+            .first()
+        )
+
+        # Paso 3: el código debe existir y estar disponible (vigente y con intentos).
+        if codigo is None or not codigo.esta_disponible():
+            return False
+
+        # Paso 4: comparar el PIN con el hash guardado.
+        if not codigo.verificar_pin(pin):
+            # Se suma el intento fallido y se guarda; el return confirma la
+            # transacción, así el intento queda registrado aunque el PIN falle.
+            codigo.intentos += 1
+            codigo.save(update_fields=["intentos"])
+            return False
+
+        # Paso 5 (HU-07.2): cambiar la clave y marcar el PIN como usado.
+        # Ambos cambios ocurren en la misma transacción: o se hacen los dos,
+        # o ninguno. Nunca queda la clave cambiada con el PIN todavía disponible.
+        usuario.set_password(clave_nueva)
+        usuario.save(update_fields=["password"])
+        codigo.usado = True
+        codigo.save(update_fields=["usado"])
+
+    return True

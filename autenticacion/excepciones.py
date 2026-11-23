@@ -40,7 +40,6 @@ class ServicioCaptchaNoDisponible(APIException):
     default_code = "captcha_no_disponible"
 
     
-
 class ServicioCorreoNoDisponible(APIException):
     """
     El servidor de correo no aceptó el mensaje con el PIN. Responde 503 (HU-06).
@@ -55,3 +54,20 @@ class ServicioCorreoNoDisponible(APIException):
         "Intente de nuevo en unos minutos."
     )
     default_code = "correo_no_disponible"
+
+
+class PinInvalido(APIException):
+    """
+    El PIN no sirve para cambiar la clave. Responde 400 (HU-07).
+
+    El mensaje es el mismo para todos los casos (PIN incorrecto, vencido,
+    usado, sin intentos o correo inexistente), a propósito: así no se
+    revela si el correo existe ni cuántos intentos quedan.
+    """
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_detail = (
+        "El código no es válido o ya venció. "
+        "Verifíquelo o solicite uno nuevo."
+    )
+    default_code = "pin_invalido"
