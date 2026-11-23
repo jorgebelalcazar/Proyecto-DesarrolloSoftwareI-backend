@@ -23,6 +23,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
+from autenticacion.captcha import CaptchaNoDisponible, verificar_captcha
+from autenticacion.excepciones import ServicioCaptchaNoDisponible
 from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
 
@@ -111,6 +113,7 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
     confirmacion_clave = serializers.CharField(
         write_only=True, trim_whitespace=False, style={"input_type": "password"}
     )
+    captcha = serializers.CharField(write_only=True)
 
     # Solo de lectura: aparecen en la respuesta, pero el cliente no puede enviarlos.
     # slug_field="nombre" muestra "AUTOR" en lugar del id del rol.
@@ -122,7 +125,7 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
             "id", "correo", "nombres", "apellidos", "tipo_documento",
             "numero_documento", "afiliacion", "pais", "telefono",
             "acepta_tratamiento_datos", "clave", "confirmacion_clave",
-            "roles", "fecha_registro",
+            "captcha", "roles", "fecha_registro",
         ]
         read_only_fields = ["id", "fecha_registro"]
         extra_kwargs = {
@@ -151,6 +154,20 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
             )
         return valor
 
+    def validate_captcha(self, valor):
+        """Verifica ante Google el CAPTCHA exigido por HU-01."""
+        request = self.context.get("request")
+        ip = request.META.get("REMOTE_ADDR") if request else None
+        try:
+            valido = verificar_captcha(valor, ip)
+        except CaptchaNoDisponible as error:
+            raise ServicioCaptchaNoDisponible() from error
+        if not valido:
+            raise serializers.ValidationError(
+                "La verificación CAPTCHA no es válida. Intente de nuevo."
+            )
+        return valor
+
     def validate(self, datos):
         """Verifica que la clave y su confirmación coincidan."""
         if datos["clave"] != datos["confirmacion_clave"]:
@@ -165,6 +182,7 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
         """
         # Paso 1: separar los campos que no son columnas del modelo.
         datos.pop("confirmacion_clave")
+        datos.pop("captcha")
         clave = datos.pop("clave")
 
         try:
@@ -271,6 +289,10 @@ class CrearUsuarioSerializer(serializers.ModelSerializer):
         if especialidades and Rol.Nombre.COMITE not in nombres:
             raise serializers.ValidationError(
                 {"especialidades": ["Las especialidades solo aplican a los miembros del comité científico."]}
+            )
+        if Rol.Nombre.COMITE in nombres and not especialidades:
+            raise serializers.ValidationError(
+                {"especialidades": ["Asigne al menos una línea temática a los miembros del comité científico."]}
             )
         return datos
 

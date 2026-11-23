@@ -198,7 +198,7 @@ RECAPTCHA_URL_VERIFICACION = "https://www.google.com/recaptcha/api/siteverify"
 # Tiempo máximo de espera de la respuesta de Google, en segundos.
 # La verificación suele tardar menos de 500 ms (meta de la HU-03.2); este es el
 # límite a partir del cual se considera que Google no está disponible.
-RECAPTCHA_TIEMPO_LIMITE = 3
+RECAPTCHA_TIEMPO_LIMITE = 0.5
 
 
 # ---------------------------------------------------------------------------
