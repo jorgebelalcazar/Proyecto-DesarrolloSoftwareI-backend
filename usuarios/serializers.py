@@ -357,3 +357,103 @@ class UsuarioDirectorioGestionSerializer(UsuarioDirectorioSerializer):
             "correo", "activo", "fecha_registro", "fecha_desactivacion",
         ]
         read_only_fields = fields
+
+# ===========================================================================
+# HU-10: MI PERFIL (CONSULTAR Y EDITAR LOS DATOS PROPIOS)
+# ===========================================================================
+class PerfilUsuarioSerializer(serializers.ModelSerializer):
+    """
+    Datos del perfil del usuario que inició sesión (HU-10).
+
+    Lectura (GET): sus datos, sus roles y sus especialidades.
+
+    Edición (PATCH), solo estos campos (CAMPOS_EDITABLES):
+      - nombres, apellidos, tipo_documento, numero_documento, afiliacion,
+        pais y telefono;
+      - especialidades (lista de ids), solo si el usuario es del comité.
+
+    Seguridad (HU-10.2, bloqueo de auto-escalación):
+    Se usa una lista PERMITIDA, no una lista prohibida. Cualquier campo que no
+    esté en CAMPOS_EDITABLES, como roles, activo, correo, is_superuser o
+    password, se rechaza con 400. Así, un campo nuevo del modelo queda
+    bloqueado hasta que alguien decida, a propósito, permitir su edición.
+    """
+
+    # Campos que el usuario puede cambiar en su propio perfil.
+    CAMPOS_EDITABLES = {
+        "nombres", "apellidos", "tipo_documento", "numero_documento",
+        "afiliacion", "pais", "telefono", "especialidades",
+    }
+
+    # Roles por código, solo de lectura: nadie se asigna roles desde su perfil.
+    roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field="nombre")
+
+    # Escritura: lista de ids de líneas temáticas, por ejemplo [1, 3].
+    # La lectura se arma en to_representation con el formato {id, nombre}.
+    especialidades = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=LineaTematica.objects.all(), required=False, write_only=True
+    )
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id", "correo", "nombres", "apellidos", "tipo_documento",
+            "numero_documento", "afiliacion", "pais", "telefono",
+            "roles", "especialidades", "fecha_registro",
+        ]
+        read_only_fields = ["id", "correo", "roles", "fecha_registro"]
+
+    def validate(self, datos):
+        """
+        Rechaza los campos que no se pueden editar y valida las especialidades.
+
+          - Campos fuera de CAMPOS_EDITABLES -> 400 en cada uno (HU-10.2).
+          - Especialidades sin el rol COMITE -> 400, la misma regla de la HU-02.
+        """
+        # Paso 1: campos recibidos que no están permitidos.
+        # initial_data es el JSON original, antes de que DRF descarte lo desconocido.
+        no_permitidos = set(self.initial_data) - self.CAMPOS_EDITABLES
+        if no_permitidos:
+            raise serializers.ValidationError({
+                campo: ["Este campo no se puede modificar desde el perfil."]
+                for campo in sorted(no_permitidos)
+            })
+
+        # Paso 2: las especialidades solo aplican a los miembros del comité.
+        # Se revisa que la persona TENGA el rol, sin importar con cuál trabaja ahora.
+        if "especialidades" in datos and not self.instance.tiene_rol(Rol.Nombre.COMITE):
+            raise serializers.ValidationError({
+                "especialidades": [
+                    "Las especialidades solo aplican a los miembros del comité científico."
+                ]
+            })
+
+        return datos
+
+    def to_representation(self, instance):
+        """
+        Agrega las especialidades a la respuesta con el formato {id, nombre},
+        igual que el directorio (HU-08) y el catálogo GET /api/lineas-tematicas/.
+        """
+        datos = super().to_representation(instance)
+        datos["especialidades"] = LineaTematicaSerializer(
+            instance.especialidades.all(), many=True
+        ).data
+        return datos
+
+    def update(self, instance, datos):
+        """
+        Guarda los datos personales y las especialidades en una sola transacción.
+
+        especialidades.set() deja exactamente la lista recibida: crea las nuevas
+        filas en la tabla "especialidad", borra las que sobran y no toca las que
+        se mantienen.
+        """
+        especialidades = datos.pop("especialidades", None)
+
+        with transaction.atomic():
+            instance = super().update(instance, datos)
+            if especialidades is not None:
+                instance.especialidades.set(especialidades)
+
+        return instance

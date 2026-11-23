@@ -16,6 +16,7 @@ from .models import Rol, Usuario
 from .permisos import IsAdminOrComitePermission, obtener_rol_activo
 from .serializers import (
     CrearUsuarioSerializer,
+    PerfilUsuarioSerializer,
     RegistroAutorSerializer,
     UsuarioDirectorioGestionSerializer,
     UsuarioDirectorioSerializer,
@@ -155,3 +156,34 @@ class ListarUsuariosView(generics.ListAPIView):
         if self.es_gestor():
             return UsuarioDirectorioGestionSerializer
         return UsuarioDirectorioSerializer
+
+class MiPerfilView(generics.RetrieveUpdateAPIView):
+    """
+    GET y PATCH /api/usuarios/mi-perfil/   (HU-10)
+
+    Permite que cualquier usuario (Administrador, Comité o Autor) consulte y
+    edite sus propios datos personales.
+
+    Siempre trabaja sobre el usuario del token (get_object devuelve
+    request.user): la ruta no recibe un id, así que no hay forma de pedir
+    o modificar el perfil de otra persona.
+
+    Respuestas:
+      - 200 OK:           los datos del perfil (también después de editarlos).
+      - 400 Bad Request:  un campo inválido o que no se puede editar (roles,
+                          activo, correo, clave...), o especialidades sin ser del comité.
+      - 401 Unauthorized: no se envió un token válido.
+      - 405 Method Not Allowed: PUT o DELETE; la edición es parcial (PATCH).
+
+    Permisos: no se declara permission_classes, para usar los de settings.py
+    (IsAuthenticated y el validador global del rol activo).
+    """
+
+    serializer_class = PerfilUsuarioSerializer
+
+    # Solo PATCH (edición parcial): el usuario envía únicamente lo que cambia.
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_object(self):
+        """El perfil es siempre el del usuario que hace la petición."""
+        return self.request.user
