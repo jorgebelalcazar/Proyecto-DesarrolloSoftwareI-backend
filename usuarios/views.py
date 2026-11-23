@@ -5,11 +5,13 @@ Una vista recibe la petición HTTP, usa un serializador para validar los datos
 y devuelve la respuesta en JSON con el código de estado correspondiente.
 """
 
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics
 from rest_framework.permissions import AllowAny
 
 from core.paginacion import PaginacionEstandar
 
+from .filters import BusquedaDirectorio, UsuarioFilter
 from .models import Rol, Usuario
 from .permisos import IsAdminOrComitePermission, obtener_rol_activo
 from .serializers import (
@@ -76,7 +78,7 @@ class CrearUsuarioView(generics.CreateAPIView):
 
 class ListarUsuariosView(generics.ListAPIView):
     """
-    GET /api/usuarios/   (HU-08)
+    GET /api/usuarios/   (HU-08 y HU-09)
 
     Directorio paginado de los usuarios registrados en la conferencia.
     Lo pueden consultar todos los roles (enunciado del proyecto), pero cada
@@ -91,8 +93,16 @@ class ListarUsuariosView(generics.ListAPIView):
       - Para un usuario con varios roles, el encabezado X-Rol-Activo; sin él
         recibe la vista de Autor, que es la de menor privilegio.
 
+    Filtros y búsqueda (HU-09), combinables entre sí y con la paginación:
+      - ?rol=COMITE           ADMIN, COMITE o AUTOR.
+      - ?especialidad=1       id de una línea temática.
+      - ?estado=false         true (activos) o false (desactivados).
+      - ?search=valle         texto en nombres, apellidos y afiliación; para
+                              ADMIN y COMITE, también en el correo.
+
     Respuestas:
       - 200 OK:           página de usuarios (count, next, previous, results).
+      - 400 Bad Request:  un filtro con un valor que no existe (?rol=SUPERADMIN).
       - 401 Unauthorized: no se envió un token válido.
       - 403 Forbidden:    X-Rol-Activo indica un rol que el usuario no tiene.
 
@@ -102,6 +112,17 @@ class ListarUsuariosView(generics.ListAPIView):
     """
 
     pagination_class = PaginacionEstandar
+
+    # Filtros exactos (HU-09.1) y búsqueda por texto (HU-09.2).
+    filter_backends = [DjangoFilterBackend, BusquedaDirectorio]
+    filterset_class = UsuarioFilter
+
+    # Campos de la búsqueda para todos los roles.
+    search_fields = ["nombres", "apellidos", "afiliacion"]
+
+    # Campos que se agregan a la búsqueda solo para ADMIN y COMITE: un Autor
+    # no ve los correos, así que tampoco puede buscar por ellos.
+    search_fields_gestion = ["correo"]
 
     def es_gestor(self):
         """Indica si el rol activo de la petición es ADMIN o COMITE."""
