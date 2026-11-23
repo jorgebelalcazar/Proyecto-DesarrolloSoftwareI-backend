@@ -6,6 +6,7 @@ Vistas (endpoints) de la autenticación.
   GET  /api/auth/sesion/   -> devuelve los datos del usuario del token.
   POST /api/auth/solicitar-pin/ -> envía el PIN de recuperación de clave (HU-06).
   POST /api/auth/confirmar-pin/ -> verifica el PIN y cambia la clave (HU-07).
+  POST /api/auth/logout/   -> cierra la sesión: invalida el token de renovación (HU-05).
 """
 
 from django.contrib.auth.models import update_last_login
@@ -13,15 +14,17 @@ from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from usuarios.models import CodigoRecuperacion
 
-from .excepciones import PinInvalido, ServicioCorreoNoDisponible
+from .excepciones import PinInvalido, ServicioCorreoNoDisponible, SesionNoValida
 from .recuperacion import CorreoNoEnviado, confirmar_recuperacion, solicitar_recuperacion
 from .serializers import (
     ConfirmarPinSerializer,
     LoginSerializer,
+    LogoutSerializer,
     SolicitarPinSerializer,
     UsuarioSesionSerializer,
 )
@@ -177,3 +180,55 @@ class ConfirmarPinView(APIView):
             {"detail": "La clave se cambió correctamente. Ya puede iniciar sesión."},
             status=status.HTTP_200_OK,
         )
+
+
+class LogoutView(APIView):
+    """
+    POST /api/auth/logout/   (HU-05)
+
+    Cierra la sesión: pone el token de renovación en la lista negra de
+    Simple JWT. Desde ese momento ese token ya no sirve para pedir tokens
+    de acceso nuevos en /api/auth/refresh/.
+
+    Entrada (JSON): {"refresh": "<token de renovación>"}
+
+    Respuestas:
+      - 204 No Content:   sesión cerrada (sin cuerpo).
+      - 400 Bad Request:  no se envió el campo "refresh".
+      - 401 Unauthorized: el token no sirve: mal formado, vencido, ya
+                          cerrado o es un token de acceso.
+
+    El token de acceso NO se puede invalidar: es un JWT sin estado y el
+    servidor no guarda una lista de ellos. Por eso dura poco (30 minutos,
+    SIMPLE_JWT en settings.py) y el front-end debe borrarlo al cerrar sesión.
+
+    Se cierra SOLO la sesión de ese token: si el usuario inició sesión en
+    otro dispositivo, esa otra sesión sigue abierta.
+    """
+
+    # Igual que /api/auth/refresh/: la credencial es el token de renovación,
+    # no el token de acceso. Así el usuario puede cerrar sesión aunque su
+    # token de acceso ya haya vencido (por ejemplo, tras 30 minutos sin uso).
+    permission_classes = [AllowAny]
+
+    # No se lee el encabezado Authorization: un token de acceso vencido o
+    # inválido no debe impedir que el usuario cierre su sesión.
+    authentication_classes = []
+
+    def post(self, request):
+        # Paso 1: validar que llegue el campo "refresh" (400 si falta).
+        serializer = LogoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Paso 2: ponerlo en la lista negra.
+        # RefreshToken(...) verifica la firma, el vencimiento, el tipo de
+        # token y que no esté ya en la lista negra. Si algo falla lanza
+        # TokenError; se atrapa SOLO ese error, para no ocultar fallos
+        # distintos (por ejemplo, de la base de datos) como si fueran un 401.
+        try:
+            RefreshToken(serializer.validated_data["refresh"]).blacklist()
+        except TokenError:
+            raise SesionNoValida()
+
+        # Paso 3: 204 = la operación se hizo y no hay nada que devolver.
+        return Response(status=status.HTTP_204_NO_CONTENT)

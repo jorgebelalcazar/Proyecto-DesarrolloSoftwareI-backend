@@ -7,6 +7,7 @@ Contenido:
   - UsuarioSesionSerializer:  datos del usuario en la sesión (HU-03 y HU-04).
   - SolicitarPinSerializer:   solicitud del PIN de recuperación (HU-06).
   - ConfirmarPinSerializer:   confirmación del PIN y nueva clave (HU-07).
+  - LogoutSerializer:         cierre de sesión (HU-05).
 """
 
 from django.contrib.auth import authenticate
@@ -178,3 +179,18 @@ class ConfirmarPinSerializer(serializers.Serializer):
         if datos["clave"] != datos["confirmacion_clave"]:
             raise serializers.ValidationError({"confirmacion_clave": "Las claves no coinciden."})
         return datos
+
+
+class LogoutSerializer(serializers.Serializer):
+    """
+    Datos para cerrar la sesión (HU-05).
+
+    Entrada (JSON):
+      - refresh: el token de renovación que entregó el login.
+
+    Solo valida que llegue el campo. Si el token sirve o no, lo decide la
+    vista al intentar ponerlo en la lista negra.
+    """
+
+    # write_only: el token se recibe, pero nunca se devuelve.
+    refresh = serializers.CharField(write_only=True)
