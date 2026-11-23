@@ -1,14 +1,14 @@
 """
 Rutas de la autenticación. Se montan bajo /api/auth/ en config/urls.py.
 
-Aquí también se agregarán las rutas de la recuperación de clave
-(HU-06 y HU-07) en las siguientes fases.
+La recuperación de clave tiene dos pasos: solicitar-pin/ (HU-06) y
+confirmar-pin/ (HU-07).
 """
 
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from .views import LoginView, SesionView
+from .views import ConfirmarPinView, LoginView, SesionView, SolicitarPinView
 
 app_name = "autenticacion"
 
@@ -22,4 +22,10 @@ urlpatterns = [
 
     # GET  /api/auth/sesion/   Datos del usuario del token.
     path("sesion/", SesionView.as_view(), name="sesion"),
+    
+    # POST /api/auth/solicitar-pin/   (HU-06) Envía el PIN de recuperación por correo.
+    path("solicitar-pin/", SolicitarPinView.as_view(), name="solicitar-pin"),
+    
+    # POST /api/auth/confirmar-pin/   (HU-07) Verifica el PIN y cambia la clave.
+    path("confirmar-pin/", ConfirmarPinView.as_view(), name="confirmar-pin"),
 ]

@@ -4,6 +4,8 @@ Vistas (endpoints) de la autenticación.
   POST /api/auth/login/    -> inicia sesión y entrega los tokens (HU-03).
   POST /api/auth/refresh/  -> renueva el token de acceso (vista de Simple JWT).
   GET  /api/auth/sesion/   -> devuelve los datos del usuario del token.
+  POST /api/auth/solicitar-pin/ -> envía el PIN de recuperación de clave (HU-06).
+  POST /api/auth/confirmar-pin/ -> verifica el PIN y cambia la clave (HU-07).
 """
 
 from django.contrib.auth.models import update_last_login
@@ -13,7 +15,22 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .serializers import LoginSerializer, UsuarioSesionSerializer
+from usuarios.models import CodigoRecuperacion
+
+from .excepciones import PinInvalido, ServicioCorreoNoDisponible
+from .recuperacion import CorreoNoEnviado, confirmar_recuperacion, solicitar_recuperacion
+from .serializers import (
+    ConfirmarPinSerializer,
+    LoginSerializer,
+    SolicitarPinSerializer,
+    UsuarioSesionSerializer,
+)
+
+# Respuesta única de la solicitud del PIN: es la misma exista o no el correo.
+MENSAJE_PIN_SOLICITADO = (
+    "Si el correo corresponde a una cuenta activa, recibirá un código de "
+    "recuperación en los próximos minutos."
+)
 
 
 class LoginView(APIView):
@@ -78,3 +95,85 @@ class SesionView(APIView):
     def get(self, request):
         # request.user es el usuario que DRF identificó a partir del token.
         return Response(UsuarioSesionSerializer(request.user).data)
+
+
+class SolicitarPinView(APIView):
+    """
+    POST /api/auth/solicitar-pin/   (HU-06)
+
+    Paso 1 de la recuperación de clave: si el correo tiene una cuenta activa,
+    le envía un PIN de 6 dígitos que vence en 15 minutos.
+
+    Respuestas:
+      - 200 OK: siempre el mismo mensaje, exista o no el correo, para no
+        revelar qué correos están registrados.
+      - 400 Bad Request: falta el correo, su formato no es válido o el
+        CAPTCHA no es válido.
+      - 503 Service Unavailable: Google no respondió al verificar el CAPTCHA,
+        o el servidor de correo no aceptó el mensaje.
+    """
+
+    # Endpoint público: quien olvidó su clave no puede iniciar sesión.
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        # Paso 1: validar el correo y el CAPTCHA (400 o 503 si fallan).
+        serializer = SolicitarPinSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+
+        # Paso 2: generar y enviar el PIN, si corresponde.
+        try:
+            solicitar_recuperacion(serializer.validated_data["correo"])
+        except CorreoNoEnviado:
+            raise ServicioCorreoNoDisponible()
+
+        # Paso 3: responder siempre lo mismo.
+        return Response(
+            {
+                "detail": MENSAJE_PIN_SOLICITADO,
+                "vigencia_minutos": CodigoRecuperacion.VIGENCIA_MINUTOS,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ConfirmarPinView(APIView):
+    """
+    POST /api/auth/confirmar-pin/   (HU-07)
+
+    Paso 2 de la recuperación de clave: verifica el PIN que llegó por correo
+    y, si es válido, cambia la clave. El PIN queda usado y no sirve otra vez.
+
+    Respuestas:
+      - 200 OK: la clave se cambió; el usuario ya puede iniciar sesión con ella.
+      - 400 Bad Request:
+          * datos con formato inválido (PIN que no son 6 dígitos, clave débil,
+            claves que no coinciden): error en el campo correspondiente;
+          * PIN que no sirve: "El código no es válido o ya venció..." en
+            "detail", el mismo mensaje sin importar la causa.
+
+    No pide CAPTCHA: cada PIN admite solo 3 intentos y vence a los 15 minutos,
+    y para obtener un PIN ya hay que pasar el CAPTCHA del paso 1 (HU-06).
+    """
+
+    # Endpoint público: quien recupera su clave no puede iniciar sesión.
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        # Paso 1: validar el formato (400 por campo si falla; no gasta intentos).
+        serializer = ConfirmarPinSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        datos = serializer.validated_data
+
+        # Paso 2: verificar el PIN y cambiar la clave.
+        clave_cambiada = confirmar_recuperacion(datos["correo"], datos["pin"], datos["clave"])
+        if not clave_cambiada:
+            raise PinInvalido()
+
+        # Paso 3: confirmar el cambio.
+        return Response(
+            {"detail": "La clave se cambió correctamente. Ya puede iniciar sesión."},
+            status=status.HTTP_200_OK,
+        )

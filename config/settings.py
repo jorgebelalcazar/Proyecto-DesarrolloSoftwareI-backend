@@ -15,6 +15,7 @@ from pathlib import Path
 import os
 import sys  # Permite saber con qué comando se ejecutó Django
 import dj_database_url
+from corsheaders.defaults import default_headers  # Encabezados que CORS permite por defecto
 from dotenv import load_dotenv
 from datetime import timedelta  # Para definir la duración de los tokens JWT
 
@@ -47,6 +48,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",    
     "rest_framework_simplejwt",  # Tokens JWT; se registra para usar sus mensajes en español
     "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
+    "django_filters",  # Filtros por parámetros en la URL, como ?rol=AUTOR (HU-09)
 ]
 
 # Modelo de usuario propio del proyecto.
@@ -145,6 +147,10 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 CORS_ALLOWED_ORIGINS = ["http://localhost:5173"]
 
+# Encabezados que el front-end puede enviar: los de siempre más el del rol activo.
+# Sin esta línea, el navegador bloquearía el encabezado X-Rol-Activo (HU-02 y HU-04).
+CORS_ALLOW_HEADERS = (*default_headers, "x-rol-activo")
+
 # ---------------------------------------------------------------------------
 # Django REST Framework (HU-03)
 # ---------------------------------------------------------------------------
@@ -163,6 +169,9 @@ REST_FRAMEWORK = {
     # Así, si alguien olvida proteger un endpoint nuevo, queda protegido igual.
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
+        
+        # Si llega el encabezado X-Rol-Activo, el usuario debe tener ese rol (HU-04).
+        "usuarios.permisos.ValidarRolActivo",
     ],
 }
 
@@ -192,3 +201,29 @@ RECAPTCHA_URL_VERIFICACION = "https://www.google.com/recaptcha/api/siteverify"
 # La verificación suele tardar menos de 500 ms (meta de la HU-03.2); este es el
 # límite a partir del cual se considera que Google no está disponible.
 RECAPTCHA_TIEMPO_LIMITE = 3
+
+
+# ---------------------------------------------------------------------------
+# Correo electrónico (HU-06.2)
+# ---------------------------------------------------------------------------
+# Motor de envío. Por defecto, "console": el correo NO se envía, se imprime en
+# la terminal donde corre runserver. Así cada integrante prueba la recuperación
+# de clave sin configurar un servidor de correo.
+# En producción se usa SMTP: "django.core.mail.backends.smtp.EmailBackend".
+# (Durante las pruebas automáticas Django usa su propio buzón en memoria.)
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+
+# Datos del servidor SMTP. Solo se usan con el motor SMTP; se leen del .env.
+EMAIL_HOST = os.getenv("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+
+# Remitente que ven los usuarios.
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Nexo <no-responder@nexo.local>")
+
+# Tiempo máximo de espera del servidor de correo, en segundos.
+# Sin este límite, un servidor SMTP caído dejaría la petición esperando.
+EMAIL_TIMEOUT = 10
+
