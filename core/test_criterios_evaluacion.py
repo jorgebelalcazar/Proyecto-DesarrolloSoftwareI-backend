@@ -41,8 +41,12 @@ class CriteriosEvaluacionApiTests(APITestCase):
         self.client.force_authenticate(user=self.comite)
         respuesta = self.client.get(self.url, HTTP_X_ROL_ACTIVO="COMITE")
         self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-        self.assertEqual([fila["nombre"] for fila in respuesta.data], ["Aporte", "Metodología"])
-        self.assertEqual(respuesta.data[0]["peso"], 60)
+        self.assertEqual(
+            [fila["nombre"] for fila in respuesta.data["results"]],
+            ["Aporte", "Metodología"],
+        )
+        self.assertEqual(respuesta.data["results"][0]["peso"], 60)
+        self.assertEqual(respuesta.data["count"], 2)
 
     def test_autor_recibe_403(self):
         """El autor no puede consultar la rúbrica de trabajo del comité."""

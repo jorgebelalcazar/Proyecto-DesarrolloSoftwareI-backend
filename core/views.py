@@ -12,8 +12,10 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
 from .models import CriterioEvaluacion, LineaTematica
+from .paginacion import PaginacionEstandar
 from .serializers import CriterioEvaluacionSerializer, LineaTematicaSerializer
-from usuarios.permisos import IsAdminOrComitePermission
+from usuarios.models import Rol
+from usuarios.permisos import RequiereRolActivo
 
 
 @api_view(["GET"])
@@ -69,7 +71,9 @@ class CriterioEvaluacionListView(generics.ListAPIView):
     """GET /api/criterios-evaluacion/ devuelve la rúbrica activa al comité."""
 
     serializer_class = CriterioEvaluacionSerializer
-    permission_classes = [IsAdminOrComitePermission]
+    permission_classes = [RequiereRolActivo]
+    roles_permitidos = [Rol.Nombre.ADMIN, Rol.Nombre.COMITE]
+    pagination_class = PaginacionEstandar
 
     def get_queryset(self):
         """Solo incluye criterios habilitados, en el orden definido por el comité."""
