@@ -1,9 +1,25 @@
-"""Pruebas para la carga del PDF inicial en Supabase (HU-16)."""
+"""
+Pruebas de la carga del PDF inicial del artículo (HU-16).
+
+Endpoint: POST /api/articulos/{id}/versiones/
+
+Cubren el caso de prueba CP-12 de la subtarea de QA HU-16.5:
+  - un PDF válido de 2 MB se acepta;
+  - un PDF de 12 MB y un archivo .docx se rechazan en el servidor.
+Y además: firma %PDF, límite exacto de 10 MB, permisos, plazo, versión
+inicial única, fallos de Supabase, limpieza de archivos huérfanos y las
+reglas de la tabla version_articulo en la base de datos.
+
+Las pruebas NO se conectan con Supabase: la subida se reemplaza con
+unittest.mock.patch. Así no dependen de internet ni llenan el bucket real.
+"""
 
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -13,215 +29,302 @@ from conferencias.models import Conferencia
 from core.models import LineaTematica
 from usuarios.models import Rol, Usuario
 
+from .almacenamiento import subir_pdf_articulo
 from .models import Articulo, VersionArticulo
 
+RUTA_FALSA = "articulos/1/archivo-de-prueba.pdf"
+UN_MB = 1024 * 1024
 
-class CargarPdfTests(APITestCase):
-    """Verifica validación, permisos, almacenamiento y registro de la versión."""
 
+def crear_usuario(correo, *roles):
+    """Crea un usuario de prueba con los roles indicados."""
+    usuario = Usuario.objects.create_user(
+        correo, "ClaveSegura123",
+        nombres="Ana", apellidos="Prueba",
+        afiliacion="Universidad del Valle", pais="Colombia",
+    )
+    for rol in roles:
+        usuario.asignar_rol(rol)
+    return usuario
+
+
+def crear_conferencia(dias_para_cerrar=30):
+    """Edición de la conferencia; con días negativos, la postulación ya cerró."""
+    ahora = timezone.now()
+    hoy = timezone.localdate()
+    return Conferencia.objects.create(
+        nombre="Nexo 2027",
+        limite_postulacion=ahora + timedelta(days=dias_para_cerrar),
+        limite_revision=ahora + timedelta(days=45),
+        limite_correccion=ahora + timedelta(days=60),
+        limite_version_final=ahora + timedelta(days=75),
+        fecha_inicio_evento=hoy + timedelta(days=90),
+        fecha_fin_evento=hoy + timedelta(days=92),
+    )
+
+
+def pdf(nombre="manuscrito.pdf", tamano=1024, contenido=None):
+    """
+    Archivo de prueba. Por defecto, un PDF de "tamano" bytes que empieza
+    con la firma %PDF-.
+    """
+    if contenido is None:
+        contenido = b"%PDF-" + b"x" * (tamano - 5)
+    return SimpleUploadedFile(nombre, contenido, content_type="application/pdf")
+
+
+# El nombre que se reemplaza es el que usa la vista: "articulos.views.<función>".
+@patch("articulos.views.eliminar_pdf_articulo")
+@patch("articulos.views.subir_pdf_articulo", return_value=RUTA_FALSA)
+class SubirVersionInicialTests(APITestCase):
     @classmethod
     def setUpTestData(cls):
-        cls.autor = Usuario.objects.create_user(
-            "autor-pdf@ejemplo.com",
-            "ClaveSegura123",
-            nombres="Ana",
-            apellidos="Prueba",
-            afiliacion="Universidad del Valle",
-            pais="Colombia",
-        )
-        cls.autor.asignar_rol(Rol.Nombre.AUTOR)
-        cls.otro_autor = Usuario.objects.create_user(
-            "otro-pdf@ejemplo.com",
-            "ClaveSegura123",
-            nombres="Luis",
-            apellidos="Prueba",
-            afiliacion="Universidad del Valle",
-            pais="Colombia",
-        )
-        cls.otro_autor.asignar_rol(Rol.Nombre.AUTOR)
-        cls.comite = Usuario.objects.create_user(
-            "comite-pdf@ejemplo.com",
-            "ClaveSegura123",
-            nombres="Sara",
-            apellidos="Prueba",
-            afiliacion="Universidad del Valle",
-            pais="Colombia",
-        )
-        cls.comite.asignar_rol(Rol.Nombre.COMITE)
+        """Datos comunes, creados UNA vez para todas las pruebas de la clase."""
+        cls.autor = crear_usuario("autor@ejemplo.com", Rol.Nombre.AUTOR)
+        cls.otro_autor = crear_usuario("otro@ejemplo.com", Rol.Nombre.AUTOR)
+        cls.comite = crear_usuario("comite@ejemplo.com", Rol.Nombre.COMITE)
+        cls.conferencia = crear_conferencia()
         cls.linea = LineaTematica.objects.get(nombre="Sistemas Inteligentes")
-        ahora = timezone.now()
-        cls.conferencia = Conferencia.objects.create(
-            nombre="Nexo 2027",
-            limite_postulacion=ahora + timedelta(days=10),
-            limite_revision=ahora + timedelta(days=20),
-            limite_correccion=ahora + timedelta(days=30),
-            limite_version_final=ahora + timedelta(days=40),
-            fecha_inicio_evento=timezone.localdate() + timedelta(days=50),
-            fecha_fin_evento=timezone.localdate() + timedelta(days=52),
+        cls.articulo = Articulo.objects.create(
+            conferencia=cls.conferencia, linea_tematica=cls.linea,
+            autor_responsable=cls.autor, titulo="Redes neuronales en el agro",
+            resumen="Monitoreo de cultivos.", palabras_clave="IA, agro",
         )
 
     def setUp(self):
-        self.articulo = Articulo.objects.create(
-            conferencia=self.conferencia,
-            linea_tematica=self.linea,
-            autor_responsable=self.autor,
-            titulo="Artículo de prueba",
-            resumen="Resumen de prueba.",
-            palabras_clave="prueba",
-        )
-        self.url = reverse("articulos:subir-version-inicial", args=[self.articulo.id])
+        self.url = reverse("articulos:versiones", args=[self.articulo.id])
         self.client.force_authenticate(user=self.autor)
 
-    @staticmethod
-    def pdf(nombre="manuscrito.pdf", contenido=b"%PDF-1.7 contenido"):
-        """Crea un archivo temporal con los bytes indicados."""
-        return SimpleUploadedFile(nombre, contenido, content_type="application/pdf")
+    def subir(self, archivo=None, url=None):
+        """Atajo: POST multipart con el archivo indicado (o sin archivo)."""
+        datos = {"archivo": archivo} if archivo is not None else {}
+        return self.client.post(url or self.url, datos, format="multipart")
 
-    @patch("articulos.views.subir_pdf_articulo", return_value="articulos/1/inicial.pdf")
-    def test_pdf_valido_se_registra_como_version_uno(self, subir):
-        # Preparar: adjuntar un PDF pequeño y válido.
-        respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
+    # ------------------------------------------- Caso exitoso (criterio 2)
+    def test_pdf_valido_queda_registrado_como_version_1_inicial(self, subir, eliminar):
+        respuesta = self.subir(pdf())
 
-        # Verificar: se registra la primera versión y se conserva la ruta privada.
         self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
         version = VersionArticulo.objects.get(articulo=self.articulo)
-        self.assertEqual(version.numero_version, 1)
-        self.assertEqual(version.ruta_archivo, "articulos/1/inicial.pdf")
-        self.assertEqual(version.cargado_por, self.autor)
+        self.assertEqual(version.tipo, VersionArticulo.Tipo.INICIAL)
+        self.assertEqual(version.numero, 1)
+        self.assertEqual(version.ruta_pdf, RUTA_FALSA)
         subir.assert_called_once()
+        self.assertEqual(subir.call_args.args[0], self.articulo.id)
 
-    @patch("articulos.views.subir_pdf_articulo", return_value="articulos/1/inicial.pdf")
-    def test_pdf_de_dos_mib_se_acepta_para_el_caso_cp12(self, subir):
-        """El tamaño esperado en CP-12 sigue siendo válido en el servidor."""
-        # Preparar: construir un PDF válido de 2 MiB, como en la prueba manual.
-        archivo = self.pdf(contenido=b"%PDF-" + b"x" * (2 * 1024 * 1024 - 5))
+    def test_la_respuesta_no_expone_la_ruta_privada(self, subir, eliminar):
+        respuesta = self.subir(pdf())
 
-        # Ejecutar: enviar el archivo como multipart.
-        respuesta = self.client.post(self.url, {"archivo": archivo}, format="multipart")
-
-        # Verificar: el servidor acepta el archivo y registra la versión inicial.
-        self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(VersionArticulo.objects.filter(articulo=self.articulo, numero_version=1).exists())
-        subir.assert_called_once()
-
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_rechaza_extension_distinta_de_pdf(self, subir):
-        respuesta = self.client.post(
-            self.url, {"archivo": self.pdf("manuscrito.docx")}, format="multipart"
+        self.assertEqual(
+            set(respuesta.data),
+            {"id", "articulo", "tipo", "tipo_nombre", "numero", "fecha_subida"},
         )
+        self.assertEqual(respuesta.data["tipo_nombre"], "Inicial")
 
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("archivo", respuesta.data)
-        subir.assert_not_called()
-
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_rechaza_archivo_mayor_a_10_mib(self, subir):
-        archivo = self.pdf(contenido=b"%PDF-" + b"x" * (10 * 1024 * 1024))
-
-        respuesta = self.client.post(self.url, {"archivo": archivo}, format="multipart")
-
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        subir.assert_not_called()
-
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_rechaza_pdf_de_doce_mib_para_el_caso_cp12(self, subir):
-        """El tamaño de 12 MiB de CP-12 se rechaza antes de contactar Supabase."""
-        # Preparar: construir un PDF válido que supera el máximo permitido.
-        archivo = self.pdf(contenido=b"%PDF-" + b"x" * (12 * 1024 * 1024 - 5))
-
-        # Ejecutar: enviar el archivo al endpoint.
-        respuesta = self.client.post(self.url, {"archivo": archivo}, format="multipart")
-
-        # Verificar: el servidor responde 400 y no intenta subirlo.
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("archivo", respuesta.data)
-        subir.assert_not_called()
-
-    @patch("articulos.views.subir_pdf_articulo", return_value="articulos/1/inicial.pdf")
-    def test_alias_subir_pdf_usa_el_mismo_contrato(self, subir):
-        """La ruta publicada por el front-end crea la misma versión inicial."""
-        # Preparar: usar el alias que consume articleService.js.
-        url = reverse("articulos:subir-pdf", args=[self.articulo.id])
-
-        # Ejecutar: enviar un PDF válido al alias.
-        respuesta = self.client.post(url, {"archivo": self.pdf()}, format="multipart")
-
-        # Verificar: se conserva la misma respuesta y registro de versión.
+    # ----------------------------- CP-12 y validación del servidor (criterios 1 y 3)
+    def test_cp12_pdf_de_2_mb_se_acepta(self, subir, eliminar):
+        respuesta = self.subir(pdf(tamano=2 * UN_MB))
         self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(VersionArticulo.objects.get(articulo=self.articulo).numero_version, 1)
-        subir.assert_called_once()
 
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_rechaza_archivo_sin_firma_pdf(self, subir):
-        respuesta = self.client.post(
-            self.url, {"archivo": self.pdf(contenido=b"texto plano")}, format="multipart"
-        )
+    def test_pdf_de_exactamente_10_mb_se_acepta(self, subir, eliminar):
+        respuesta = self.subir(pdf(tamano=10 * UN_MB))
+        self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
+
+    def test_archivos_invalidos_se_rechazan_sin_subir_nada(self, subir, eliminar):
+        casos = {
+            "CP-12: PDF de 12 MB": pdf(tamano=12 * UN_MB),
+            "un byte más de 10 MB": pdf(tamano=10 * UN_MB + 1),
+            "CP-12: archivo .docx": pdf(nombre="manuscrito.docx"),
+            "PDF sin firma %PDF": pdf(contenido=b"PK\x03\x04 un docx renombrado"),
+            "archivo vacío": pdf(contenido=b""),
+        }
+        for caso, archivo in casos.items():
+            with self.subTest(caso=caso):
+                respuesta = self.subir(archivo)
+
+                self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn("archivo", respuesta.data)
+
+        subir.assert_not_called()
+        self.assertFalse(VersionArticulo.objects.exists())
+
+    def test_sin_archivo_devuelve_400(self, subir, eliminar):
+        respuesta = self.subir()
 
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        subir.assert_not_called()
+        self.assertEqual(respuesta.data["archivo"], ["Debe adjuntar el PDF del artículo."])
 
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_exige_adjuntar_un_archivo(self, subir):
-        respuesta = self.client.post(self.url, {}, format="multipart")
-
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        subir.assert_not_called()
-
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_otro_autor_no_puede_subir_archivo_al_articulo(self, subir):
+    # ------------------------------------------------------------ Permisos
+    def test_otro_autor_recibe_403(self, subir, eliminar):
         self.client.force_authenticate(user=self.otro_autor)
 
-        respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
-
-        self.assertEqual(respuesta.status_code, status.HTTP_404_NOT_FOUND)
-        subir.assert_not_called()
-
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_comite_no_puede_subir_el_pdf(self, subir):
-        self.client.force_authenticate(user=self.comite)
-
-        respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
+        respuesta = self.subir(pdf())
 
         self.assertEqual(respuesta.status_code, status.HTTP_403_FORBIDDEN)
         subir.assert_not_called()
 
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_sin_token_responde_401(self, subir):
+    def test_comite_recibe_403(self, subir, eliminar):
+        self.client.force_authenticate(user=self.comite)
+        respuesta = self.subir(pdf())
+        self.assertEqual(respuesta.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sin_token_devuelve_401(self, subir, eliminar):
         self.client.force_authenticate(user=None)
-
-        respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
-
+        respuesta = self.subir(pdf())
         self.assertEqual(respuesta.status_code, status.HTTP_401_UNAUTHORIZED)
-        subir.assert_not_called()
 
-    @patch("articulos.views.subir_pdf_articulo")
-    def test_no_permite_cargar_dos_veces_la_version_inicial(self, subir):
+    def test_articulo_inexistente_devuelve_404(self, subir, eliminar):
+        url = reverse("articulos:versiones", args=[99999])
+        respuesta = self.subir(pdf(), url=url)
+        self.assertEqual(respuesta.status_code, status.HTTP_404_NOT_FOUND)
+
+    # ------------------------------------------- Reglas del artículo
+    def test_no_se_sube_un_segundo_pdf_inicial(self, subir, eliminar):
         VersionArticulo.objects.create(
-            articulo=self.articulo,
-            numero_version=1,
-            ruta_archivo="articulos/1/anterior.pdf",
-            cargado_por=self.autor,
+            articulo=self.articulo, tipo=VersionArticulo.Tipo.INICIAL,
+            numero=1, ruta_pdf="articulos/1/anterior.pdf",
         )
 
-        respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
+        respuesta = self.subir(pdf())
 
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(respuesta.data["detail"], "El artículo ya tiene su PDF inicial cargado.")
         subir.assert_not_called()
 
-    @patch("articulos.views.subir_pdf_articulo", side_effect=OSError("sin conexión"))
-    def test_si_supabase_no_responde_devuelve_503(self, subir):
-        respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
+    def test_con_el_plazo_vencido_devuelve_400(self, subir, eliminar):
+        self.articulo.conferencia = crear_conferencia(dias_para_cerrar=-1)
+        self.articulo.save()
+
+        respuesta = self.subir(pdf())
+
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("venció", respuesta.data["detail"])
+        subir.assert_not_called()
+
+    def test_articulo_deshabilitado_devuelve_400(self, subir, eliminar):
+        self.articulo.estado = Articulo.Estado.DESHABILITADO
+        self.articulo.save()
+
+        respuesta = self.subir(pdf())
+
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("deshabilitado", respuesta.data["detail"])
+        subir.assert_not_called()
+
+    # ----------------------------------------------- Fallos de Supabase
+    def test_si_supabase_falla_devuelve_503_y_no_registra(self, subir, eliminar):
+        subir.side_effect = OSError("sin conexión")
+
+        with self.assertLogs("articulos.views", level="ERROR"):
+            respuesta = self.subir(pdf())
 
         self.assertEqual(respuesta.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.assertFalse(VersionArticulo.objects.filter(articulo=self.articulo).exists())
+        self.assertNotIn("conexión", respuesta.data["detail"])
+        self.assertFalse(VersionArticulo.objects.exists())
 
-    @patch("articulos.views.eliminar_pdf_articulo")
-    @patch("articulos.views.subir_pdf_articulo", return_value="articulos/1/inicial.pdf")
-    @patch("articulos.models.VersionArticulo.objects.create", side_effect=RuntimeError)
-    def test_limpia_el_archivo_si_falla_el_registro(
-        self, crear_version, subir, eliminar
-    ):
-        respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
+    def test_dos_subidas_simultaneas_borran_el_pdf_sobrante(self, subir, eliminar):
+        """
+        Simula la carrera: mientras este PDF sube, otra petición registra la
+        versión 1. La restricción de la base de datos rechaza la segunda, y
+        su archivo se borra del bucket.
+        """
+        def otra_peticion_gana(articulo_id, archivo):
+            VersionArticulo.objects.create(
+                articulo=self.articulo, tipo=VersionArticulo.Tipo.INICIAL,
+                numero=1, ruta_pdf="articulos/1/ganador.pdf",
+            )
+            return RUTA_FALSA
+
+        subir.side_effect = otra_peticion_gana
+
+        respuesta = self.subir(pdf())
+
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        eliminar.assert_called_once_with(RUTA_FALSA)
+        self.assertEqual(VersionArticulo.objects.get().ruta_pdf, "articulos/1/ganador.pdf")
+
+    def test_si_falla_el_registro_se_borra_el_pdf_subido(self, subir, eliminar):
+        with patch.object(VersionArticulo.objects, "create", side_effect=RuntimeError("BD caída")):
+            with self.assertRaises(RuntimeError), self.assertLogs("django.request"):
+                self.subir(pdf())
+
+        eliminar.assert_called_once_with(RUTA_FALSA)
+
+
+class ConexionSupabaseTests(APITestCase):
+    """Servicio de almacenamiento.py (HU-16.1), sin conectarse a Supabase."""
+
+    @override_settings(
+        SUPABASE_URL="https://proyecto.supabase.co",
+        SUPABASE_SERVICE_ROLE_KEY="llave-de-prueba",
+        SUPABASE_STORAGE_BUCKET="articulos",
+    )
+    @patch("supabase.create_client")
+    def test_sube_al_bucket_privado_con_un_nombre_aleatorio(self, create_client):
+        bucket = MagicMock()
+        create_client.return_value.storage.from_.return_value = bucket
+
+        ruta = subir_pdf_articulo(7, pdf(nombre="../../otro.pdf"))
+
+        create_client.assert_called_once_with("https://proyecto.supabase.co", "llave-de-prueba")
+        create_client.return_value.storage.from_.assert_called_once_with("articulos")
+        self.assertRegex(ruta, r"^articulos/7/[0-9a-f-]{36}\.pdf$")
+        argumentos = bucket.upload.call_args.kwargs
+        self.assertEqual(argumentos["path"], ruta)
+        self.assertTrue(argumentos["file"].startswith(b"%PDF-"))
+        self.assertEqual(argumentos["file_options"]["content-type"], "application/pdf")
+
+    @override_settings(SUPABASE_URL="", SUPABASE_SERVICE_ROLE_KEY="")
+    def test_sin_credenciales_la_api_responde_503(self):
+        """Si falta el .env, el autor recibe 503 y no un error 500."""
+        autor = crear_usuario("autor@ejemplo.com", Rol.Nombre.AUTOR)
+        articulo = Articulo.objects.create(
+            conferencia=crear_conferencia(),
+            linea_tematica=LineaTematica.objects.get(nombre="Sistemas Inteligentes"),
+            autor_responsable=autor, titulo="Título", resumen="Resumen.", palabras_clave="IA",
+        )
+        self.client.force_authenticate(user=autor)
+
+        with self.assertLogs("articulos.views", level="ERROR"):
+            respuesta = self.client.post(
+                reverse("articulos:versiones", args=[articulo.id]),
+                {"archivo": pdf()}, format="multipart",
+            )
 
         self.assertEqual(respuesta.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        eliminar.assert_called_once_with("articulos/1/inicial.pdf")
+
+
+class ReglasVersionArticuloTests(TestCase):
+    """Restricciones de la tabla version_articulo en la base de datos."""
+
+    @classmethod
+    def setUpTestData(cls):
+        autor = crear_usuario("autor@ejemplo.com", Rol.Nombre.AUTOR)
+        cls.articulo = Articulo.objects.create(
+            conferencia=crear_conferencia(),
+            linea_tematica=LineaTematica.objects.get(nombre="Sistemas Inteligentes"),
+            autor_responsable=autor, titulo="Título", resumen="Resumen.", palabras_clave="IA",
+        )
+
+    def crear(self, tipo, numero):
+        return VersionArticulo.objects.create(
+            articulo=self.articulo, tipo=tipo, numero=numero, ruta_pdf=f"articulos/x/{numero}.pdf"
+        )
+
+    def test_rechaza_versiones_invalidas(self):
+        Tipo = VersionArticulo.Tipo
+        self.crear(Tipo.INICIAL, 1)
+        casos = {
+            "número repetido": (Tipo.CORRECCION, 1),
+            "número cero": (Tipo.CORRECCION, 0),
+            "segunda versión inicial": (Tipo.INICIAL, 2),
+        }
+        for caso, (tipo, numero) in casos.items():
+            with self.subTest(caso=caso):
+                with self.assertRaises(IntegrityError), transaction.atomic():
+                    self.crear(tipo, numero)
+
+    def test_acepta_la_correccion_despues_de_la_inicial(self):
+        self.crear(VersionArticulo.Tipo.INICIAL, 1)
+        self.crear(VersionArticulo.Tipo.CORRECCION, 2)
+        self.assertEqual(self.articulo.versiones.count(), 2)
