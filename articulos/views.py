@@ -4,6 +4,7 @@ Vistas (endpoints) del dominio de artículos.
   POST /api/articulos/                      -> postular un artículo (HU-14).
   GET y PUT /api/articulos/{id}/coautores/  -> gestionar firmantes (HU-15).
   POST /api/articulos/{id}/versiones/       -> subir PDF inicial (HU-16).
+  POST /api/articulos/{id}/subir-pdf/      -> alias usado por el front-end (HU-16).
 """
 
 import logging
@@ -68,7 +69,9 @@ class CrearArticuloView(generics.CreateAPIView):
 
 class SubirVersionInicialView(APIView):
     """
-    POST /api/articulos/{id}/versiones/ (HU-16)
+    POST /api/articulos/{id}/versiones/ (HU-16).
+    También disponible como POST /api/articulos/{id}/subir-pdf/ para
+    conservar el contrato que consume el formulario del front-end.
 
     Valida el PDF inicial, lo guarda en Supabase Storage y registra su ruta
     privada en VERSION_ARTICULO como versión 1.

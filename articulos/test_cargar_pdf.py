@@ -79,13 +79,29 @@ class CargarPdfTests(APITestCase):
 
     @patch("articulos.views.subir_pdf_articulo", return_value="articulos/1/inicial.pdf")
     def test_pdf_valido_se_registra_como_version_uno(self, subir):
+        # Preparar: adjuntar un PDF pequeño y válido.
         respuesta = self.client.post(self.url, {"archivo": self.pdf()}, format="multipart")
 
+        # Verificar: se registra la primera versión y se conserva la ruta privada.
         self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
         version = VersionArticulo.objects.get(articulo=self.articulo)
         self.assertEqual(version.numero_version, 1)
         self.assertEqual(version.ruta_archivo, "articulos/1/inicial.pdf")
         self.assertEqual(version.cargado_por, self.autor)
+        subir.assert_called_once()
+
+    @patch("articulos.views.subir_pdf_articulo", return_value="articulos/1/inicial.pdf")
+    def test_pdf_de_dos_mib_se_acepta_para_el_caso_cp12(self, subir):
+        """El tamaño esperado en CP-12 sigue siendo válido en el servidor."""
+        # Preparar: construir un PDF válido de 2 MiB, como en la prueba manual.
+        archivo = self.pdf(contenido=b"%PDF-" + b"x" * (2 * 1024 * 1024 - 5))
+
+        # Ejecutar: enviar el archivo como multipart.
+        respuesta = self.client.post(self.url, {"archivo": archivo}, format="multipart")
+
+        # Verificar: el servidor acepta el archivo y registra la versión inicial.
+        self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(VersionArticulo.objects.filter(articulo=self.articulo, numero_version=1).exists())
         subir.assert_called_once()
 
     @patch("articulos.views.subir_pdf_articulo")
@@ -106,6 +122,34 @@ class CargarPdfTests(APITestCase):
 
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
         subir.assert_not_called()
+
+    @patch("articulos.views.subir_pdf_articulo")
+    def test_rechaza_pdf_de_doce_mib_para_el_caso_cp12(self, subir):
+        """El tamaño de 12 MiB de CP-12 se rechaza antes de contactar Supabase."""
+        # Preparar: construir un PDF válido que supera el máximo permitido.
+        archivo = self.pdf(contenido=b"%PDF-" + b"x" * (12 * 1024 * 1024 - 5))
+
+        # Ejecutar: enviar el archivo al endpoint.
+        respuesta = self.client.post(self.url, {"archivo": archivo}, format="multipart")
+
+        # Verificar: el servidor responde 400 y no intenta subirlo.
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("archivo", respuesta.data)
+        subir.assert_not_called()
+
+    @patch("articulos.views.subir_pdf_articulo", return_value="articulos/1/inicial.pdf")
+    def test_alias_subir_pdf_usa_el_mismo_contrato(self, subir):
+        """La ruta publicada por el front-end crea la misma versión inicial."""
+        # Preparar: usar el alias que consume articleService.js.
+        url = reverse("articulos:subir-pdf", args=[self.articulo.id])
+
+        # Ejecutar: enviar un PDF válido al alias.
+        respuesta = self.client.post(url, {"archivo": self.pdf()}, format="multipart")
+
+        # Verificar: se conserva la misma respuesta y registro de versión.
+        self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(VersionArticulo.objects.get(articulo=self.articulo).numero_version, 1)
+        subir.assert_called_once()
 
     @patch("articulos.views.subir_pdf_articulo")
     def test_rechaza_archivo_sin_firma_pdf(self, subir):
