@@ -2,11 +2,12 @@
 Serializadores del dominio de artículos.
 
 Contenido:
-  - CrearArticuloSerializer: postular un artículo (HU-14).
+  - CoautorSerializer y validar_coautores: firmantes del artículo (HU-15).
+  - CrearArticuloSerializer: postular un artículo, con sus coautores (HU-14 y HU-15).
+  - CoautoresArticuloSerializer: reemplazar la lista de coautores (HU-15).
 """
 
 from django.db import transaction
-from django.utils import timezone
 from rest_framework import serializers
 
 from conferencias.models import Conferencia
@@ -14,11 +15,96 @@ from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
 
 from .excepciones import PostulacionCerrada
-from .models import Articulo, HistorialEstado
+from .models import Articulo, AutorArticulo, HistorialEstado, mensaje_plazo_vencido
 
 # Límites de la HU-14 (criterio 3).
 MAX_CARACTERES_TITULO = 200
 MAX_PALABRAS_RESUMEN = 300
+
+
+# ===========================================================================
+# HU-15: COAUTORES O FIRMANTES
+# ===========================================================================
+class CoautorSerializer(serializers.ModelSerializer):
+    """
+    Un coautor o firmante del artículo (HU-15).
+
+    Entrada (JSON): {"nombre_completo": "...", "afiliacion": "...", "correo": "..."}
+      - Los tres son obligatorios y no pueden quedar en blanco (DRF quita
+        los espacios de los extremos y responde 400 si queda vacío).
+      - El correo debe tener formato válido (EmailField).
+
+    "orden" es de solo lectura: lo asigna el servidor según la posición en
+    la lista (ver validar_coautores).
+    """
+
+    class Meta:
+        model = AutorArticulo
+        fields = ["nombre_completo", "afiliacion", "correo", "orden"]
+        read_only_fields = ["orden"]
+
+    def validate_correo(self, valor):
+        """Correo en minúsculas: "Ana@X.co" y "ana@x.co" son el mismo firmante."""
+        return valor.lower()
+
+
+def validar_coautores(coautores):
+    """
+    Valida la lista completa de coautores y les asigna su orden de firma.
+
+    Reglas (HU-15, criterio 3):
+      - Un correo no se repite en la lista. El error se marca en la fila
+        repetida, para que el front-end lo muestre junto a ese firmante:
+            {"coautores": [{}, {}, {"correo": ["Este correo ya está..."]}]}
+      - El orden de firma es la posición en la lista: el primero es 1, el
+        segundo 2... Para reordenar, el front-end envía la lista en el
+        nuevo orden. Así nunca hay posiciones repetidas ni saltos.
+    """
+    # Paso 1: buscar correos repetidos; cada fila tiene su propio diccionario de errores.
+    errores = []
+    correos_vistos = set()
+    for coautor in coautores:
+        if coautor["correo"] in correos_vistos:
+            errores.append({"correo": ["Este correo ya está en la lista de coautores."]})
+        else:
+            errores.append({})
+            correos_vistos.add(coautor["correo"])
+
+    if any(errores):
+        raise serializers.ValidationError(errores)
+
+    # Paso 2: el orden de firma es la posición en la lista, empezando en 1.
+    for posicion, coautor in enumerate(coautores, start=1):
+        coautor["orden"] = posicion
+
+    return coautores
+
+
+def guardar_coautores(articulo, coautores):
+    """
+    Reemplaza los coautores del artículo por la lista recibida (ya validada).
+
+    Debe llamarse dentro de una transacción: si falla, el artículo conserva
+    su lista anterior completa, nunca queda a medias.
+    """
+    articulo.coautores.all().delete()
+    AutorArticulo.objects.bulk_create(
+        AutorArticulo(articulo=articulo, **coautor) for coautor in coautores
+    )
+
+
+class CoautoresArticuloSerializer(serializers.Serializer):
+    """
+    Lista completa de coautores de un artículo, para reemplazarla (HU-15).
+
+    Entrada (JSON): {"coautores": [{...}, {...}]}
+    Una lista vacía quita todos los coautores (artículo de un solo autor).
+    """
+
+    coautores = CoautorSerializer(many=True)
+
+    def validate_coautores(self, coautores):
+        return validar_coautores(coautores)
 
 
 # ===========================================================================
@@ -34,12 +120,15 @@ class CrearArticuloSerializer(serializers.ModelSerializer):
       - palabras_clave: separadas por comas, por ejemplo "IA, redes, salud".
       - linea_tematica: id de una de las 5 líneas oficiales
                         (ver GET /api/lineas-tematicas/).
+      - coautores:      opcional (HU-15); lista de firmantes en orden,
+                        cada uno con nombre_completo, afiliacion y correo.
 
     Lo asigna el servidor, no el cliente: la conferencia (la edición vigente),
     el autor responsable (el usuario del token), el estado (POSTULADO) y la
     fecha de postulación. Si alguien los envía, se ignoran.
 
-    Salida: el artículo creado, con la línea temática como {id, nombre}.
+    Salida: el artículo creado, con la línea temática como {id, nombre} y
+    sus coautores con su orden de firma.
     """
 
     linea_tematica = serializers.PrimaryKeyRelatedField(
@@ -52,11 +141,16 @@ class CrearArticuloSerializer(serializers.ModelSerializer):
         },
     )
 
+    # Coautores en la misma petición: se guardan junto con el artículo, en
+    # una sola transacción (serializador anidado, HU-15.2).
+    coautores = CoautorSerializer(many=True, required=False)
+
     class Meta:
         model = Articulo
         fields = [
             "id", "titulo", "resumen", "palabras_clave", "linea_tematica",
-            "conferencia", "autor_responsable", "estado", "fecha_postulacion",
+            "coautores", "conferencia", "autor_responsable", "estado",
+            "fecha_postulacion",
         ]
         read_only_fields = [
             "id", "conferencia", "autor_responsable", "estado", "fecha_postulacion",
@@ -97,6 +191,10 @@ class CrearArticuloSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Debe ingresar al menos una palabra clave.")
         return ", ".join(etiquetas)
 
+    def validate_coautores(self, coautores):
+        """Correos sin repetir y orden de firma por posición (HU-15)."""
+        return validar_coautores(coautores)
+
     def validate(self, datos):
         """
         Verifica que la postulación esté abierta (HU-14, criterio 1).
@@ -115,26 +213,26 @@ class CrearArticuloSerializer(serializers.ModelSerializer):
 
         # Caso 2: la edición existe, pero su plazo de postulación ya venció.
         if not conferencia.postulacion_abierta():
-            # localtime(): la fecha se muestra en hora de Colombia.
-            limite = timezone.localtime(conferencia.limite_postulacion)
-            raise PostulacionCerrada(
-                f"El plazo de postulación de {conferencia.nombre} venció el "
-                f"{limite:%d/%m/%Y} a las {limite:%H:%M}."
-            )
+            raise PostulacionCerrada(mensaje_plazo_vencido(conferencia))
 
         datos["conferencia"] = conferencia
         return datos
 
     def create(self, datos):
         """
-        Crea el artículo en estado POSTULADO y su primera fila en el historial.
+        Crea el artículo en estado POSTULADO, sus coautores y su primera fila
+        en el historial.
 
-        Usa una transacción: o se crean el artículo Y su historial, o nada.
-        Así nunca queda un artículo sin la trazabilidad de su postulación.
+        Usa una transacción: o se crea todo, o nada. Así nunca queda un
+        artículo sin sus coautores ni sin la trazabilidad de su postulación.
         """
+        # Los coautores no son una columna de "articulo": se guardan aparte.
+        coautores = datos.pop("coautores", [])
+
         # autor_responsable llega desde la vista: serializer.save(autor_responsable=...).
         with transaction.atomic():
             articulo = Articulo.objects.create(**datos)
+            guardar_coautores(articulo, coautores)
             HistorialEstado.objects.create(
                 articulo=articulo,
                 usuario=articulo.autor_responsable,

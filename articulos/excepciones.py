@@ -20,3 +20,16 @@ class PostulacionCerrada(APIException):
     status_code = status.HTTP_400_BAD_REQUEST
     default_detail = "La postulación de artículos está cerrada."
     default_code = "postulacion_cerrada"
+
+
+class ArticuloNoEditable(APIException):
+    """
+    El autor ya no puede modificar el artículo. Responde 400 (HU-15 y HU-20).
+
+    Casos: el artículo está DESHABILITADO, o ya pasó el límite de
+    postulación de su edición. El mensaje lo da Articulo.motivo_no_editable().
+    """
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_detail = "El artículo ya no se puede modificar."
+    default_code = "articulo_no_editable"
