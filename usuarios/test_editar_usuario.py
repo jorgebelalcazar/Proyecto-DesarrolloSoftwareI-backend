@@ -264,7 +264,10 @@ class GestionUsuarioTests(APITestCase):
 
     def test_ultimo_admin_puede_agregarse_roles_conservando_admin(self):
         """Conservar ADMIN no borra esa fila, así que la regla no se dispara."""
-        respuesta = self.editar_como(self.admin, self.admin, {"roles": ["ADMIN", "COMITE"]})
+        respuesta = self.editar_como(self.admin, self.admin, {
+            "roles": ["ADMIN", "COMITE"],
+            "especialidades": [self.software.id],  # el comité exige al menos una
+        })
 
         self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
         self.assertEqual(roles_de(self.admin), {"ADMIN", "COMITE"})
