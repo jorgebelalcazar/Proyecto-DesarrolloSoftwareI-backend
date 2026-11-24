@@ -8,13 +8,12 @@ postulación de artículos:
   - autor_articulo:   coautores o firmantes del artículo (HU-15).
   - version_articulo: archivos PDF del artículo (HU-16).
 
-Más adelante se agregan, cada uno con su migración y en su historia de usuario:
-  - habilitado, motivo_deshabilitacion y fecha_deshabilitacion (HU-21).
+Más adelante se agrega, con su migración y en su historia de usuario:
   - ruta_copyright de la versión final.
 """
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.db.models import Q
 from django.utils import timezone
 
@@ -32,6 +31,10 @@ def mensaje_plazo_vencido(conferencia):
         f"El plazo de postulación de {conferencia.nombre} venció el "
         f"{limite:%d/%m/%Y} a las {limite:%H:%M}."
     )
+
+
+class ArticuloYaDeshabilitado(Exception):
+    """El artículo ya estaba deshabilitado: la deshabilitación no se repite (HU-21)."""
 
 
 # ---------------------------------------------------------------------------
@@ -93,11 +96,37 @@ class Articulo(models.Model):
     # auto_now_add=True: Django pone la fecha automáticamente al crear el registro.
     fecha_postulacion = models.DateTimeField("fecha de postulación", auto_now_add=True)
 
+    # --- Deshabilitación por el comité (HU-21) --------------------------------
+    # Un artículo deshabilitado sale de la conferencia para siempre: no se
+    # borra (el registro científico se conserva) y no se puede rehabilitar.
+    habilitado = models.BooleanField("habilitado", default=True)
+    motivo_deshabilitacion = models.TextField("motivo de la deshabilitación", blank=True)
+    fecha_deshabilitacion = models.DateTimeField(
+        "fecha de la deshabilitación", null=True, blank=True
+    )
+
     class Meta:
         db_table = "articulo"
         verbose_name = "artículo"
         verbose_name_plural = "artículos"
         ordering = ["-fecha_postulacion"]
+
+        # Regla en la base de datos (HU-21): las columnas de la deshabilitación
+        # siempre van de acuerdo con el estado. O el artículo está habilitado
+        # y no tiene motivo ni fecha, o está DESHABILITADO con motivo y fecha.
+        # Así nunca queda un artículo "a medias".
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(habilitado=True, motivo_deshabilitacion="", fecha_deshabilitacion=None)
+                    & ~Q(estado="DESHABILITADO")
+                ) | (
+                    Q(habilitado=False, estado="DESHABILITADO", fecha_deshabilitacion__isnull=False)
+                    & ~Q(motivo_deshabilitacion="")
+                ),
+                name="ck_articulo_deshabilitacion_coherente",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.titulo} ({self.get_estado_display()})"
@@ -116,6 +145,46 @@ class Articulo(models.Model):
         if not self.conferencia.postulacion_abierta():
             return mensaje_plazo_vencido(self.conferencia)
         return None
+
+    def deshabilitar(self, usuario, motivo):
+        """
+        Retira el artículo de la conferencia de forma permanente (HU-21).
+
+        En una sola transacción:
+          1. Pasa el artículo a DESHABILITADO, con habilitado=False, el motivo
+             y la fecha. No hay DELETE: el registro se conserva (criterio 2).
+          2. Guarda en el historial quién lo hizo, cuándo, desde qué estado
+             y por qué (criterio 3).
+
+        Es irreversible: no existe la operación contraria, y si el artículo
+        ya estaba deshabilitado lanza ArticuloYaDeshabilitado.
+
+        select_for_update() bloquea la fila mientras dura la transacción: si
+        dos miembros del comité lo deshabilitan al mismo tiempo, el segundo
+        espera, ve el estado ya cambiado y recibe el error, en lugar de dejar
+        dos filas en el historial.
+        """
+        with transaction.atomic():
+            actual = Articulo.objects.select_for_update().get(pk=self.pk)
+            if actual.estado == self.Estado.DESHABILITADO:
+                raise ArticuloYaDeshabilitado("El artículo ya está deshabilitado.")
+
+            estado_anterior = actual.estado
+            self.estado = self.Estado.DESHABILITADO
+            self.habilitado = False
+            self.motivo_deshabilitacion = motivo
+            self.fecha_deshabilitacion = timezone.now()
+            self.save(update_fields=[
+                "estado", "habilitado", "motivo_deshabilitacion", "fecha_deshabilitacion",
+            ])
+
+            HistorialEstado.objects.create(
+                articulo=self,
+                usuario=usuario,
+                estado_anterior=estado_anterior,
+                estado_nuevo=self.Estado.DESHABILITADO,
+                observacion=motivo,
+            )
 
 
 # ---------------------------------------------------------------------------

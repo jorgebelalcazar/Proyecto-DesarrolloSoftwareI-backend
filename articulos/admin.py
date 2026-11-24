@@ -58,6 +58,12 @@ class ArticuloAdmin(admin.ModelAdmin):
 
     # Campos en los que busca el buscador.
     search_fields = ("titulo", "palabras_clave", "autor_responsable__correo")
+    
+    # El estado y la deshabilitación solo cambian con los endpoints, que
+    # dejan el historial (HU-21). Desde el panel no se puede rehabilitar.
+    readonly_fields = (
+        "estado", "habilitado", "motivo_deshabilitacion", "fecha_deshabilitacion",
+    )
 
     # Coautores, versiones del PDF e historial de estados dentro del artículo.
     inlines = (AutorArticuloInline, VersionArticuloInline, HistorialEstadoInline)

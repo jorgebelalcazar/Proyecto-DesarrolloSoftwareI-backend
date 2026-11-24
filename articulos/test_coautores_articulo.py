@@ -258,7 +258,7 @@ class CoautoresArticuloTests(APITestCase):
 
     def test_articulo_deshabilitado_no_cambia_sus_coautores(self):
         articulo = self.crear_articulo(coautor(1))
-        Articulo.objects.filter(pk=articulo.pk).update(estado=Articulo.Estado.DESHABILITADO)
+        articulo.deshabilitar(self.autor, "Fuera del alcance temático del evento.")
 
         respuesta = self.reemplazar(articulo, [coautor(2)])
 
