@@ -10,4 +10,5 @@ psycopg-binary==3.3.6
 PyJWT==2.15.1
 python-dotenv==1.2.4
 sqlparse==0.6.0
+supabase==2.34.1
 tzdata==2026.5

@@ -4,6 +4,25 @@ Registro del dominio de artículos en el panel de administración.
 
 from django.contrib import admin
 
+from .models import VersionArticulo
+
+
+@admin.register(VersionArticulo)
+class VersionArticuloAdmin(admin.ModelAdmin):
+    """Muestra las versiones sin exponer enlaces públicos al documento."""
+
+    list_display = ("articulo", "numero_version", "cargado_por", "fecha_carga")
+    list_filter = ("numero_version", "fecha_carga")
+    readonly_fields = ("articulo", "numero_version", "ruta_archivo", "cargado_por", "fecha_carga")
+
+    def has_add_permission(self, request):
+        """Las versiones solo se crean mediante el endpoint validado."""
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        """Evita alterar el historial de archivos desde el panel."""
+        return False
+
 from .models import Articulo, HistorialEstado
 
 

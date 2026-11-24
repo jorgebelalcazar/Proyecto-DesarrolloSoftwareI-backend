@@ -130,3 +130,38 @@ class HistorialEstado(models.Model):
     def __str__(self):
         origen = self.estado_anterior or "INICIO"
         return f"Artículo #{self.articulo_id}: {origen} -> {self.estado_nuevo}"
+
+
+class VersionArticulo(models.Model):
+    """Archivo entregado para una versión de un artículo (HU-16)."""
+
+    articulo = models.ForeignKey(
+        Articulo,
+        on_delete=models.CASCADE,
+        related_name="versiones",
+        verbose_name="artículo",
+    )
+    numero_version = models.PositiveSmallIntegerField("número de versión")
+    ruta_archivo = models.CharField("ruta privada del archivo", max_length=500)
+    cargado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="versiones_articulo_cargadas",
+        verbose_name="cargado por",
+    )
+    fecha_carga = models.DateTimeField("fecha de carga", auto_now_add=True)
+
+    class Meta:
+        db_table = "version_articulo"
+        verbose_name = "versión de artículo"
+        verbose_name_plural = "versiones de artículo"
+        ordering = ["articulo_id", "numero_version"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["articulo", "numero_version"],
+                name="uniq_version_articulo_numero",
+            ),
+        ]
+
+    def __str__(self):
+        return f"Artículo #{self.articulo_id}, versión {self.numero_version}"
