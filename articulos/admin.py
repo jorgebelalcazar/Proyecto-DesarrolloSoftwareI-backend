@@ -4,7 +4,7 @@ Registro del dominio de artículos en el panel de administración.
 
 from django.contrib import admin
 
-from .models import Articulo, AutorArticulo, HistorialEstado
+from .models import Articulo, AutorArticulo, HistorialEstado, VersionArticulo
 
 
 class HistorialEstadoInline(admin.TabularInline):
@@ -27,6 +27,24 @@ class AutorArticuloInline(admin.TabularInline):
     extra = 0
 
 
+class VersionArticuloInline(admin.TabularInline):
+    """
+    Muestra las versiones del PDF dentro de cada artículo, solo para consultar (HU-16).
+
+    No se agregan, cambian ni borran desde el panel: una versión solo se crea
+    con el endpoint, que valida el PDF y lo sube a Supabase. Si se editara la
+    ruta aquí, dejaría de apuntar al archivo real del bucket.
+    """
+
+    model = VersionArticulo
+    extra = 0
+    can_delete = False
+    readonly_fields = ("tipo", "numero", "ruta_pdf", "fecha_subida")
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Articulo)
 class ArticuloAdmin(admin.ModelAdmin):
     # Columnas de la lista de artículos.
@@ -41,5 +59,5 @@ class ArticuloAdmin(admin.ModelAdmin):
     # Campos en los que busca el buscador.
     search_fields = ("titulo", "palabras_clave", "autor_responsable__correo")
 
-    # Coautores e historial de estados dentro del artículo.
-    inlines = (AutorArticuloInline, HistorialEstadoInline)
+    # Coautores, versiones del PDF e historial de estados dentro del artículo.
+    inlines = (AutorArticuloInline, VersionArticuloInline, HistorialEstadoInline)

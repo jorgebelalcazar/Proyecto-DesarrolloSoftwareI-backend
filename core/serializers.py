@@ -4,7 +4,7 @@ Serializadores de los catálogos compartidos entre módulos.
 
 from rest_framework import serializers
 
-from .models import CriterioEvaluacion, LineaTematica
+from .models import LineaTematica
 
 
 class LineaTematicaSerializer(serializers.ModelSerializer):
@@ -18,11 +18,3 @@ class LineaTematicaSerializer(serializers.ModelSerializer):
     class Meta:
         model = LineaTematica
         fields = ["id", "nombre"]
-
-
-class CriterioEvaluacionSerializer(serializers.ModelSerializer):
-    """Datos públicos del criterio que requiere el front-end."""
-
-    class Meta:
-        model = CriterioEvaluacion
-        fields = ["id", "nombre", "descripcion", "peso", "orden"]

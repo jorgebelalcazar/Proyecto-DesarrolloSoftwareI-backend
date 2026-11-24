@@ -1,23 +1,27 @@
 """
-Vistas (endpoints) de la conferencia (HU-13).
+Vistas (endpoints) de la conferencia (HU-13) y de su rúbrica (HU-22.2).
 
   GET  /api/conferencias/           -> lista de ediciones (todos los roles).
   POST /api/conferencias/           -> crea una edición (Admin o Comité).
   GET  /api/conferencias/vigente/   -> la edición vigente (todos los roles).
   GET  /api/conferencias/{id}/      -> una edición (todos los roles).
   PUT/PATCH /api/conferencias/{id}/ -> modifica sus fechas (Admin o Comité).
+  GET y PUT /api/conferencias/{id}/criterios/ -> rúbrica de evaluación (HU-22.2).
 
 No hay DELETE: los artículos de cada edición dependen de ella.
 """
 
+from django.db.models import Sum
 from rest_framework import generics
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import SAFE_METHODS
+from rest_framework.response import Response
 
 from usuarios.permisos import IsAdminOrComitePermission
 
+from .excepciones import RubricaNoEditable
 from .models import Conferencia
-from .serializers import ConferenciaSerializer
+from .serializers import ConferenciaSerializer, CriterioEvaluacionSerializer, RubricaSerializer
 
 
 class LecturaTodosEscrituraGestores:
@@ -95,3 +99,71 @@ class ConferenciaVigenteView(generics.RetrieveAPIView):
         if conferencia is None:
             raise NotFound("No hay una edición de la conferencia vigente.")
         return conferencia
+
+
+class RubricaConferenciaView(generics.GenericAPIView):
+    """
+    GET y PUT /api/conferencias/{id}/criterios/   (HU-22.2)
+
+    Consulta o reemplaza la rúbrica de evaluación de una edición.
+    Con PUT se envía la lista COMPLETA de criterios, en el orden en que se
+    deben mostrar (el mismo patrón de los coautores de la HU-15).
+
+    Entrada del PUT (JSON):
+        {"criterios": [
+            {"nombre": "Originalidad", "descripcion": "...", "puntaje_maximo": 20},
+            ...
+        ]}
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo ADMIN o COMITE: es la herramienta de trabajo del comité.
+
+    Respuestas:
+      - 200 OK:           {"conferencia": id, "puntaje_total": 100, "criterios": [...]}.
+      - 400 Bad Request:  un criterio inválido o un nombre repetido (error en
+                          la fila), una rúbrica vacía, o la postulación de la
+                          edición ya cerró ("detail").
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es ADMIN ni COMITE.
+      - 404 Not Found:    no existe una edición con ese id.
+    """
+
+    queryset = Conferencia.objects.all()
+    serializer_class = RubricaSerializer
+    permission_classes = [IsAdminOrComitePermission]
+    http_method_names = ["get", "put", "head", "options"]
+
+    def respuesta(self, conferencia):
+        """La rúbrica en su orden, con la suma de los puntajes máximos."""
+        criterios = conferencia.criterios.all()
+        return Response({
+            "conferencia": conferencia.id,
+            "puntaje_total": criterios.aggregate(total=Sum("puntaje_maximo"))["total"] or 0,
+            "criterios": CriterioEvaluacionSerializer(criterios, many=True).data,
+        })
+
+    def get(self, request, pk):
+        return self.respuesta(self.get_object())
+
+    def put(self, request, pk):
+        # Paso 1: buscar la edición y revisar el rol activo (404 o 403).
+        conferencia = self.get_object()
+
+        # Paso 2: la rúbrica se define antes de la revisión (400). Si cambiara
+        # durante la revisión, unos artículos se evaluarían con criterios
+        # distintos a los de otros.
+        if not conferencia.postulacion_abierta():
+            raise RubricaNoEditable(
+                "La rúbrica ya no se puede modificar: la postulación de "
+                f"{conferencia.nombre} cerró y empezó la revisión."
+            )
+
+        # Paso 3: validar la lista completa (400 con el error en cada fila).
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Paso 4: reemplazar la rúbrica en una transacción.
+        serializer.guardar(conferencia)
+
+        return self.respuesta(conferencia)
