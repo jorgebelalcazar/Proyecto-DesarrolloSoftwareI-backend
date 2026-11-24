@@ -1,8 +1,10 @@
 """
-Serializadores de la conferencia (HU-13).
+Serializadores de la conferencia (HU-13) y de su rúbrica (HU-22.2).
 
-ConferenciaSerializer traduce la tabla "conferencia" a JSON y valida que
-los plazos de las etapas vayan en orden cronológico estricto.
+  - ConferenciaSerializer traduce la tabla "conferencia" a JSON y valida que
+    los plazos de las etapas vayan en orden cronológico estricto.
+  - CriterioEvaluacionSerializer y RubricaSerializer validan la rúbrica de
+    evaluación de una edición.
 
 Zona horaria: las fechas con hora se responden en la hora de Colombia, por
 ejemplo "2026-03-15T23:59:00-05:00" (TIME_ZONE = "America/Bogota" en
@@ -10,10 +12,11 @@ settings.py). Si el front-end envía una fecha con hora sin zona horaria,
 Django la interpreta también como hora de Colombia.
 """
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Conferencia
+from .models import Conferencia, CriterioEvaluacion
 
 # Orden de los plazos: cada uno debe ser posterior al anterior.
 # Cada tupla es (campo, campo anterior, mensaje si no es posterior).
@@ -93,3 +96,89 @@ class ConferenciaSerializer(serializers.ModelSerializer):
         if errores:
             raise serializers.ValidationError(errores)
         return datos
+
+
+# ===========================================================================
+# HU-22.2: RÚBRICA DE EVALUACIÓN
+# ===========================================================================
+class CriterioEvaluacionSerializer(serializers.ModelSerializer):
+    """
+    Un criterio de la rúbrica (HU-22.2).
+
+    Entrada (JSON): {"nombre": "...", "descripcion": "...", "puntaje_maximo": 20}
+      - nombre: obligatorio, máximo 100 caracteres.
+      - descripcion: opcional; explica qué evalúa el criterio.
+      - puntaje_maximo: número entero de 1 a 100.
+    """
+
+    puntaje_maximo = serializers.IntegerField(
+        min_value=1,
+        max_value=100,
+        error_messages={
+            "min_value": "El puntaje máximo debe ser al menos 1.",
+            "max_value": "El puntaje máximo no puede superar 100.",
+        },
+    )
+
+    class Meta:
+        model = CriterioEvaluacion
+        fields = ["id", "nombre", "descripcion", "puntaje_maximo"]
+        read_only_fields = ["id"]
+        extra_kwargs = {"descripcion": {"required": False}}
+
+
+def validar_criterios(criterios):
+    """
+    Valida la rúbrica completa (HU-22.2).
+
+    Reglas:
+      - Tiene al menos un criterio.
+      - Un nombre no se repite, sin importar mayúsculas. El error se marca
+        en la fila repetida, igual que los coautores de la HU-15:
+            {"criterios": [{}, {"nombre": ["Este criterio ya está..."]}]}
+    """
+    if not criterios:
+        raise serializers.ValidationError("La rúbrica debe tener al menos un criterio.")
+
+    errores = []
+    nombres_vistos = set()
+    for criterio in criterios:
+        nombre = criterio["nombre"].lower()
+        if nombre in nombres_vistos:
+            errores.append({"nombre": ["Este criterio ya está en la rúbrica."]})
+        else:
+            errores.append({})
+            nombres_vistos.add(nombre)
+
+    if any(errores):
+        raise serializers.ValidationError(errores)
+    return criterios
+
+
+class RubricaSerializer(serializers.Serializer):
+    """
+    Rúbrica completa de una edición, para reemplazarla (HU-22.2).
+
+    Entrada (JSON): {"criterios": [{...}, {...}]}
+    Se envía la lista COMPLETA en el orden en que se debe mostrar: así se
+    agregan, editan, quitan y reordenan los criterios en una sola petición.
+    """
+
+    criterios = CriterioEvaluacionSerializer(many=True)
+
+    def validate_criterios(self, criterios):
+        return validar_criterios(criterios)
+
+    def guardar(self, conferencia):
+        """
+        Reemplaza la rúbrica de la edición por la lista recibida.
+
+        Usa una transacción: si algo falla, la edición conserva su rúbrica
+        anterior completa, nunca queda a medias.
+        """
+        with transaction.atomic():
+            conferencia.criterios.all().delete()
+            CriterioEvaluacion.objects.bulk_create(
+                CriterioEvaluacion(conferencia=conferencia, **criterio)
+                for criterio in self.validated_data["criterios"]
+            )

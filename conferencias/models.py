@@ -1,9 +1,11 @@
 """
 Modelos del dominio "Conferencia y configuración".
 
-Este archivo define la tabla "conferencia" del modelo relacional del Sprint 0:
-cada fila es una edición del evento, con sus fechas y los plazos de cada
-etapa del proceso científico (HU-13).
+Este archivo define dos tablas del modelo relacional del Sprint 0:
+  - conferencia: cada fila es una edición del evento, con sus fechas y los
+    plazos de cada etapa del proceso científico (HU-13).
+  - criterio_evaluacion: la rúbrica con la que el comité evalúa los
+    artículos de cada edición (HU-22.2).
 
 Orden de las etapas (se valida en el serializador y en la base de datos):
 
@@ -21,6 +23,7 @@ en la historia de usuario de la agenda, que es la que los usa.
 
 from django.db import models
 from django.db.models import F, Q
+from django.db.models.functions import Lower
 from django.utils import timezone
 
 
@@ -122,3 +125,55 @@ class Conferencia(models.Model):
                 -> rechazar con 400
         """
         return timezone.now() <= self.limite_postulacion
+
+
+# ---------------------------------------------------------------------------
+# RÚBRICA DE EVALUACIÓN (HU-22.2)
+# ---------------------------------------------------------------------------
+class CriterioEvaluacion(models.Model):
+    """
+    Criterio de la rúbrica de evaluación de una edición (tabla "criterio_evaluacion").
+
+    Cada edición de la conferencia tiene su propia rúbrica: por ejemplo,
+    "Originalidad" sobre 20 puntos, "Metodología" sobre 30... El comité
+    calificará cada artículo con estos criterios en la etapa de revisión.
+
+    El orden de la rúbrica es el orden en que se configuraron los criterios
+    (el id): el modelo relacional no tiene una columna de orden.
+    """
+
+    # on_delete=CASCADE: la rúbrica no existe sin su edición.
+    conferencia = models.ForeignKey(
+        Conferencia,
+        on_delete=models.CASCADE,
+        related_name="criterios",
+        verbose_name="conferencia",
+    )
+    nombre = models.CharField("nombre", max_length=100)
+    descripcion = models.TextField("descripción", blank=True)
+
+    # Puntaje más alto que puede recibir un artículo en este criterio.
+    puntaje_maximo = models.PositiveSmallIntegerField("puntaje máximo")
+
+    class Meta:
+        db_table = "criterio_evaluacion"
+        verbose_name = "criterio de evaluación"
+        verbose_name_plural = "criterios de evaluación"
+        ordering = ["conferencia", "id"]
+
+        # Reglas también en la base de datos:
+        #   - una edición no repite el nombre de un criterio, sin importar
+        #     mayúsculas ("Metodología" y "metodología" son el mismo);
+        #   - el puntaje máximo va de 1 a 100.
+        constraints = [
+            models.UniqueConstraint(
+                Lower("nombre"), "conferencia", name="uk_criterio_evaluacion_nombre"
+            ),
+            models.CheckConstraint(
+                condition=Q(puntaje_maximo__gte=1) & Q(puntaje_maximo__lte=100),
+                name="ck_criterio_evaluacion_puntaje_1_a_100",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.nombre} ({self.puntaje_maximo} puntos)"
