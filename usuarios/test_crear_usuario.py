@@ -141,6 +141,11 @@ class CrearUsuarioTests(APITestCase):
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("roles", respuesta.data)
 
+    def test_comite_debe_asignar_linea_tematica(self):
+        respuesta = self.crear_como(self.comite, roles=["COMITE"])
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("especialidades", respuesta.data)
+
     def test_roles_vacios_o_inexistentes_devuelven_400(self):
         for roles in ([], ["SUPERADMIN"]):
             with self.subTest(roles=roles):
