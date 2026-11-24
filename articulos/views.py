@@ -1,7 +1,9 @@
 """
 Vistas (endpoints) del dominio de artículos.
 
-  POST /api/articulos/   -> postular un artículo (HU-14).
+  POST /api/articulos/                      -> postular un artículo (HU-14).
+  GET y PUT /api/articulos/{id}/coautores/  -> gestionar firmantes (HU-15).
+  POST /api/articulos/{id}/versiones/       -> subir PDF inicial (HU-16).
 """
 
 import logging
@@ -17,9 +19,16 @@ from rest_framework.views import APIView
 from usuarios.models import Rol
 from usuarios.permisos import RequiereRolActivo
 
+from .excepciones import ArticuloNoEditable
 from .almacenamiento import eliminar_pdf_articulo, subir_pdf_articulo
 from .models import Articulo, VersionArticulo
-from .serializers import CrearArticuloSerializer
+from .permisos import EsAutorResponsable
+from .serializers import (
+    CoautoresArticuloSerializer,
+    CoautorSerializer,
+    CrearArticuloSerializer,
+    guardar_coautores,
+)
 from .validadores_archivo import validar_pdf
 
 logger = logging.getLogger(__name__)
@@ -37,8 +46,10 @@ class CrearArticuloView(generics.CreateAPIView):
       - Token JWT en el encabezado Authorization.
       - Rol activo AUTOR (encabezado X-Rol-Activo, o AUTOR como único rol).
 
+    Puede incluir sus coautores (HU-15): se guardan en la misma transacción.
+
     Respuestas:
-      - 201 Created:      el artículo creado.
+      - 201 Created:      el artículo creado, con sus coautores.
       - 400 Bad Request:  un campo inválido (error en el campo), o la
                           postulación está cerrada (error en "detail").
       - 401 Unauthorized: no se envió un token válido.
@@ -150,3 +161,73 @@ class SubirVersionInicialView(APIView):
             eliminar_pdf_articulo(ruta)
         except Exception:
             logger.exception("No fue posible limpiar el PDF huérfano %s", ruta)
+
+
+class CoautoresArticuloView(generics.GenericAPIView):
+    """
+    GET y PUT /api/articulos/{id}/coautores/   (HU-15)
+
+    Consulta o reemplaza la lista de coautores o firmantes de un artículo.
+    Con PUT se envía la lista COMPLETA en el orden de firma deseado: así se
+    agregan, editan, quitan y reordenan los firmantes en una sola petición.
+
+    Entrada del PUT (JSON):
+        {"coautores": [
+            {"nombre_completo": "...", "afiliacion": "...", "correo": "..."},
+            ...
+        ]}
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo AUTOR.
+      - Ser el autor responsable del artículo (HU-15, criterio 2).
+
+    Respuestas:
+      - 200 OK:           {"articulo": id, "coautores": [...]} en orden de firma.
+      - 400 Bad Request:  un coautor con datos inválidos o un correo repetido
+                          (error en la fila), o el artículo ya no se puede
+                          modificar: deshabilitado o plazo vencido ("detail").
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es AUTOR, o el artículo es de otro autor.
+      - 404 Not Found:    no existe un artículo con ese id.
+    """
+
+    # select_related trae la conferencia en la misma consulta: se usa para
+    # revisar el plazo de postulación.
+    queryset = Articulo.objects.select_related("conferencia")
+
+    # Dos permisos, en orden: rol activo AUTOR (antes de buscar el artículo)
+    # y, con el artículo ya encontrado, que sea su autor responsable.
+    permission_classes = [RequiereRolActivo, EsAutorResponsable]
+    roles_permitidos = [Rol.Nombre.AUTOR]
+
+    http_method_names = ["get", "put", "head", "options"]
+
+    def respuesta(self, articulo):
+        """El artículo y sus coautores en orden de firma."""
+        return Response({
+            "articulo": articulo.id,
+            "coautores": CoautorSerializer(articulo.coautores.all(), many=True).data,
+        })
+
+    def get(self, request, pk):
+        return self.respuesta(self.get_object())
+
+    def put(self, request, pk):
+        # Paso 1: buscar el artículo y revisar los permisos (404 o 403).
+        articulo = self.get_object()
+
+        # Paso 2: el artículo debe seguir siendo editable (400).
+        motivo = articulo.motivo_no_editable()
+        if motivo:
+            raise ArticuloNoEditable(motivo)
+
+        # Paso 3: validar la lista recibida (400 con el error en cada fila).
+        serializer = CoautoresArticuloSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Paso 4: reemplazar la lista en una transacción.
+        with transaction.atomic():
+            guardar_coautores(articulo, serializer.validated_data["coautores"])
+
+        return self.respuesta(articulo)

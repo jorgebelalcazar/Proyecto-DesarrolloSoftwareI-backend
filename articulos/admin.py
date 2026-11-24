@@ -1,19 +1,19 @@
-"""
-Registro del dominio de artículos en el panel de administración.
-"""
+"""Registro del dominio de artículos en el panel de administración."""
 
 from django.contrib import admin
 
-from .models import VersionArticulo
+from .models import Articulo, AutorArticulo, HistorialEstado, VersionArticulo
 
 
 @admin.register(VersionArticulo)
 class VersionArticuloAdmin(admin.ModelAdmin):
-    """Muestra las versiones sin exponer enlaces públicos al documento."""
+    """Muestra versiones sin exponer enlaces públicos al documento."""
 
     list_display = ("articulo", "numero_version", "cargado_por", "fecha_carga")
     list_filter = ("numero_version", "fecha_carga")
-    readonly_fields = ("articulo", "numero_version", "ruta_archivo", "cargado_por", "fecha_carga")
+    readonly_fields = (
+        "articulo", "numero_version", "ruta_archivo", "cargado_por", "fecha_carga"
+    )
 
     def has_add_permission(self, request):
         """Las versiones solo se crean mediante el endpoint validado."""
@@ -23,11 +23,9 @@ class VersionArticuloAdmin(admin.ModelAdmin):
         """Evita alterar el historial de archivos desde el panel."""
         return False
 
-from .models import Articulo, HistorialEstado
-
 
 class HistorialEstadoInline(admin.TabularInline):
-    """Muestra el historial dentro de cada artículo, solo para consultar."""
+    """Muestra el historial dentro del artículo en modo de consulta."""
 
     model = HistorialEstado
     extra = 0
@@ -39,19 +37,21 @@ class HistorialEstadoInline(admin.TabularInline):
         return False
 
 
+class AutorArticuloInline(admin.TabularInline):
+    """Muestra coautores dentro del artículo, en orden de firma."""
+
+    model = AutorArticulo
+    extra = 0
+
+
 @admin.register(Articulo)
 class ArticuloAdmin(admin.ModelAdmin):
-    # Columnas de la lista de artículos.
+    """Permite consultar artículos, firmantes e historial desde Django Admin."""
+
     list_display = (
         "id", "titulo", "conferencia", "linea_tematica",
         "autor_responsable", "estado", "fecha_postulacion",
     )
-
-    # Filtros del panel derecho.
     list_filter = ("conferencia", "estado", "linea_tematica")
-
-    # Campos en los que busca el buscador.
     search_fields = ("titulo", "palabras_clave", "autor_responsable__correo")
-
-    # Historial de estados dentro del artículo.
-    inlines = (HistorialEstadoInline,)
+    inlines = (AutorArticuloInline, HistorialEstadoInline)

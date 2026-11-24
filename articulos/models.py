@@ -5,15 +5,32 @@ Este archivo define las tablas del modelo relacional del Sprint 0 para la
 postulación de artículos:
   - articulo:         artículo postulado por un autor responsable (HU-14).
   - historial_estado: trazabilidad de cada cambio de estado del artículo.
+  - autor_articulo:   coautores o firmantes del artículo (HU-15).
 
 Más adelante se agregan, cada una con su migración y en su historia de usuario:
-  - autor_articulo:   coautores o firmantes del artículo (HU-15).
   - version_articulo: archivos PDF del artículo (HU-16).
   - habilitado, motivo_deshabilitacion y fecha_deshabilitacion (HU-21).
 """
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
+from django.utils import timezone
+
+
+def mensaje_plazo_vencido(conferencia):
+    """
+    Mensaje para cuando ya pasó el límite de postulación de una edición.
+
+    Lo usan la postulación (HU-14) y la edición de coautores (HU-15), y lo
+    usará la edición del artículo (HU-20). La fecha se muestra en hora de
+    Colombia: "El plazo de postulación de Nexo 2027 venció el 15/03/2027 a las 23:59."
+    """
+    limite = timezone.localtime(conferencia.limite_postulacion)
+    return (
+        f"El plazo de postulación de {conferencia.nombre} venció el "
+        f"{limite:%d/%m/%Y} a las {limite:%H:%M}."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +101,21 @@ class Articulo(models.Model):
     def __str__(self):
         return f"{self.titulo} ({self.get_estado_display()})"
 
+    def motivo_no_editable(self):
+        """
+        Indica por qué el autor ya no puede modificar el artículo, o None si sí puede.
+
+        Un artículo se puede modificar (coautores en la HU-15, metadatos en la
+        HU-20) mientras:
+          - no esté DESHABILITADO por el comité (HU-21);
+          - siga abierto el plazo de postulación de SU edición (HU-13).
+        """
+        if self.estado == self.Estado.DESHABILITADO:
+            return "El artículo está deshabilitado y ya no se puede modificar."
+        if not self.conferencia.postulacion_abierta():
+            return mensaje_plazo_vencido(self.conferencia)
+        return None
+
 
 # ---------------------------------------------------------------------------
 # HISTORIAL DE ESTADOS DEL ARTÍCULO
@@ -132,6 +164,44 @@ class HistorialEstado(models.Model):
         return f"Artículo #{self.articulo_id}: {origen} -> {self.estado_nuevo}"
 
 
+# ---------------------------------------------------------------------------
+# COAUTORES O FIRMANTES DEL ARTÍCULO (HU-15)
+# ---------------------------------------------------------------------------
+class AutorArticulo(models.Model):
+    """Coautor o firmante sin necesidad de cuenta en el sistema."""
+
+    articulo = models.ForeignKey(
+        Articulo, on_delete=models.CASCADE, related_name="coautores", verbose_name="artículo"
+    )
+    nombre_completo = models.CharField("nombre completo", max_length=200)
+    afiliacion = models.CharField("afiliación", max_length=200)
+    correo = models.EmailField("correo electrónico", max_length=254)
+    orden = models.PositiveSmallIntegerField("orden de firma")
+
+    class Meta:
+        db_table = "autor_articulo"
+        verbose_name = "coautor del artículo"
+        verbose_name_plural = "coautores del artículo"
+        ordering = ["orden"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["articulo", "correo"], name="uk_autor_articulo_correo"
+            ),
+            models.UniqueConstraint(
+                fields=["articulo", "orden"], name="uk_autor_articulo_orden"
+            ),
+            models.CheckConstraint(
+                condition=Q(orden__gte=1), name="ck_autor_articulo_orden_positivo"
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.orden}. {self.nombre_completo} <{self.correo}>"
+
+
+# ---------------------------------------------------------------------------
+# VERSIONES DEL ARCHIVO DEL ARTÍCULO (HU-16)
+# ---------------------------------------------------------------------------
 class VersionArticulo(models.Model):
     """Archivo entregado para una versión de un artículo (HU-16)."""
 
