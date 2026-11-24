@@ -7,6 +7,7 @@ Contenido:
   - CoautoresArticuloSerializer: reemplazar la lista de coautores (HU-15).
   - ArticuloResumenSerializer: una fila de los listados de artículos (HU-17).
   - ArticuloCatalogoSerializer: una fila del catálogo, con su autor (HU-18).
+  - SubirVersionInicialSerializer y VersionArticuloSerializer: PDF inicial (HU-16).
 """
 
 from django.db import transaction
@@ -18,7 +19,14 @@ from core.serializers import LineaTematicaSerializer
 from usuarios.models import Usuario
 
 from .excepciones import PostulacionCerrada
-from .models import Articulo, AutorArticulo, HistorialEstado, mensaje_plazo_vencido
+from .models import (
+    Articulo,
+    AutorArticulo,
+    HistorialEstado,
+    VersionArticulo,
+    mensaje_plazo_vencido,
+)
+from .validadores_archivo import validar_pdf
 
 # Límites de la HU-14 (criterio 3).
 MAX_CARACTERES_TITULO = 200
@@ -317,4 +325,45 @@ class ArticuloCatalogoSerializer(ArticuloResumenSerializer):
 
     class Meta(ArticuloResumenSerializer.Meta):
         fields = ArticuloResumenSerializer.Meta.fields + ["autor_responsable"]
+        read_only_fields = fields
+
+
+# ===========================================================================
+# HU-16: PDF INICIAL DEL ARTÍCULO
+# ===========================================================================
+class SubirVersionInicialSerializer(serializers.Serializer):
+    """
+    Archivo PDF que envía el autor (HU-16.2).
+
+    Entrada (multipart/form-data): un campo "archivo" con el PDF.
+    Los errores quedan en ese campo, igual que en el resto de la API:
+        {"archivo": ["El archivo debe tener extensión .pdf."]}
+    """
+
+    archivo = serializers.FileField(
+        error_messages={
+            "required": "Debe adjuntar el PDF del artículo.",
+            "empty": "El archivo está vacío.",
+        },
+    )
+
+    def validate_archivo(self, archivo):
+        """Extensión .pdf, máximo 10 MB y firma %PDF (validadores_archivo.py)."""
+        return validar_pdf(archivo)
+
+
+class VersionArticuloSerializer(serializers.ModelSerializer):
+    """
+    Versión registrada del artículo, para la respuesta (HU-16).
+
+    No incluye "ruta_pdf": el bucket es privado y la ruta no le sirve al
+    front-end. Para ver el PDF, el detalle del artículo (HU-19) entrega un
+    enlace firmado y temporal.
+    """
+
+    tipo_nombre = serializers.CharField(source="get_tipo_display", read_only=True)
+
+    class Meta:
+        model = VersionArticulo
+        fields = ["id", "articulo", "tipo", "tipo_nombre", "numero", "fecha_subida"]
         read_only_fields = fields

@@ -33,3 +33,30 @@ class ArticuloNoEditable(APIException):
     status_code = status.HTTP_400_BAD_REQUEST
     default_detail = "El artículo ya no se puede modificar."
     default_code = "articulo_no_editable"
+
+
+class VersionInicialExistente(APIException):
+    """
+    El artículo ya tiene su PDF inicial. Responde 400 (HU-16).
+
+    La versión inicial es una sola, la número 1. Las versiones siguientes
+    (corrección y final) se suben en sus propias historias de usuario.
+    """
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_detail = "El artículo ya tiene su PDF inicial cargado."
+    default_code = "version_inicial_existente"
+
+
+class AlmacenamientoNoDisponible(APIException):
+    """
+    No se pudo guardar el archivo en Supabase Storage. Responde 503 (HU-16).
+
+    503 Service Unavailable indica que el error no es del usuario sino de un
+    servicio externo: el front-end puede pedirle que lo intente más tarde.
+    El detalle técnico queda en el log del servidor, no en la respuesta.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "El almacenamiento de archivos no está disponible. Intente más tarde."
+    default_code = "almacenamiento_no_disponible"

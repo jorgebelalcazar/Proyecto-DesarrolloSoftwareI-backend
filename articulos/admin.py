@@ -1,31 +1,14 @@
-"""Registro del dominio de artículos en el panel de administración."""
+"""
+Registro del dominio de artículos en el panel de administración.
+"""
 
 from django.contrib import admin
 
 from .models import Articulo, AutorArticulo, HistorialEstado, VersionArticulo
 
 
-@admin.register(VersionArticulo)
-class VersionArticuloAdmin(admin.ModelAdmin):
-    """Muestra versiones sin exponer enlaces públicos al documento."""
-
-    list_display = ("articulo", "numero_version", "cargado_por", "fecha_carga")
-    list_filter = ("numero_version", "fecha_carga")
-    readonly_fields = (
-        "articulo", "numero_version", "ruta_archivo", "cargado_por", "fecha_carga"
-    )
-
-    def has_add_permission(self, request):
-        """Las versiones solo se crean mediante el endpoint validado."""
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        """Evita alterar el historial de archivos desde el panel."""
-        return False
-
-
 class HistorialEstadoInline(admin.TabularInline):
-    """Muestra el historial dentro del artículo en modo de consulta."""
+    """Muestra el historial dentro de cada artículo, solo para consultar."""
 
     model = HistorialEstado
     extra = 0
@@ -38,20 +21,43 @@ class HistorialEstadoInline(admin.TabularInline):
 
 
 class AutorArticuloInline(admin.TabularInline):
-    """Muestra coautores dentro del artículo, en orden de firma."""
+    """Muestra los coautores dentro de cada artículo, en orden de firma."""
 
     model = AutorArticulo
     extra = 0
 
 
+class VersionArticuloInline(admin.TabularInline):
+    """
+    Muestra las versiones del PDF dentro de cada artículo, solo para consultar (HU-16).
+
+    No se agregan, cambian ni borran desde el panel: una versión solo se crea
+    con el endpoint, que valida el PDF y lo sube a Supabase. Si se editara la
+    ruta aquí, dejaría de apuntar al archivo real del bucket.
+    """
+
+    model = VersionArticulo
+    extra = 0
+    can_delete = False
+    readonly_fields = ("tipo", "numero", "ruta_pdf", "fecha_subida")
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Articulo)
 class ArticuloAdmin(admin.ModelAdmin):
-    """Permite consultar artículos, firmantes e historial desde Django Admin."""
-
+    # Columnas de la lista de artículos.
     list_display = (
         "id", "titulo", "conferencia", "linea_tematica",
         "autor_responsable", "estado", "fecha_postulacion",
     )
+
+    # Filtros del panel derecho.
     list_filter = ("conferencia", "estado", "linea_tematica")
+
+    # Campos en los que busca el buscador.
     search_fields = ("titulo", "palabras_clave", "autor_responsable__correo")
-    inlines = (AutorArticuloInline, HistorialEstadoInline)
+
+    # Coautores, versiones del PDF e historial de estados dentro del artículo.
+    inlines = (AutorArticuloInline, VersionArticuloInline, HistorialEstadoInline)

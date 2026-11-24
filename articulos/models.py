@@ -6,10 +6,11 @@ postulación de artículos:
   - articulo:         artículo postulado por un autor responsable (HU-14).
   - historial_estado: trazabilidad de cada cambio de estado del artículo.
   - autor_articulo:   coautores o firmantes del artículo (HU-15).
-
-Más adelante se agregan, cada una con su migración y en su historia de usuario:
   - version_articulo: archivos PDF del artículo (HU-16).
+
+Más adelante se agregan, cada uno con su migración y en su historia de usuario:
   - habilitado, motivo_deshabilitacion y fecha_deshabilitacion (HU-21).
+  - ruta_copyright de la versión final.
 """
 
 from django.conf import settings
@@ -168,10 +169,22 @@ class HistorialEstado(models.Model):
 # COAUTORES O FIRMANTES DEL ARTÍCULO (HU-15)
 # ---------------------------------------------------------------------------
 class AutorArticulo(models.Model):
-    """Coautor o firmante sin necesidad de cuenta en el sistema."""
+    """
+    Coautor o firmante de un artículo (tabla "autor_articulo").
+
+    Guarda el nombre, la afiliación y el correo de cada investigador que firma
+    el artículo, SIN exigir que tenga cuenta en el sistema (HU-15, criterio 1):
+    por eso no tiene llave foránea a "usuario".
+
+    "orden" es la posición de la firma (1, 2, 3...): el orden en que aparecen
+    los nombres en el artículo publicado.
+    """
 
     articulo = models.ForeignKey(
-        Articulo, on_delete=models.CASCADE, related_name="coautores", verbose_name="artículo"
+        Articulo,
+        on_delete=models.CASCADE,
+        related_name="coautores",
+        verbose_name="artículo",
     )
     nombre_completo = models.CharField("nombre completo", max_length=200)
     afiliacion = models.CharField("afiliación", max_length=200)
@@ -183,6 +196,11 @@ class AutorArticulo(models.Model):
         verbose_name = "coautor del artículo"
         verbose_name_plural = "coautores del artículo"
         ordering = ["orden"]
+
+        # Reglas también en la base de datos (HU-15, criterio 3):
+        #   - un correo no se repite dentro del mismo artículo;
+        #   - dos firmantes no ocupan la misma posición;
+        #   - las posiciones empiezan en 1.
         constraints = [
             models.UniqueConstraint(
                 fields=["articulo", "correo"], name="uk_autor_articulo_correo"
@@ -200,10 +218,28 @@ class AutorArticulo(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# VERSIONES DEL ARCHIVO DEL ARTÍCULO (HU-16)
+# VERSIONES DEL ARCHIVO PDF DEL ARTÍCULO (HU-16)
 # ---------------------------------------------------------------------------
 class VersionArticulo(models.Model):
-    """Archivo entregado para una versión de un artículo (HU-16)."""
+    """
+    Archivo PDF de una versión del artículo (tabla "version_articulo").
+
+    Un artículo entrega varias versiones durante la conferencia:
+      - INICIAL:    el manuscrito de la postulación (HU-16). Siempre es la número 1.
+      - CORRECCION: la versión corregida después de la revisión.
+      - FINAL:      la versión final para la publicación.
+
+    El PDF NO se guarda en la base de datos: está en un bucket PRIVADO de
+    Supabase Storage. Aquí solo se guarda su ruta dentro del bucket
+    ("ruta_pdf"). Como el bucket es privado, la ruta no sirve para abrir el
+    archivo directamente: el detalle del artículo (HU-19) genera, a partir
+    de ella, un enlace firmado que vence a los pocos minutos.
+    """
+
+    class Tipo(models.TextChoices):
+        INICIAL = "INICIAL", "Inicial"
+        CORRECCION = "CORRECCION", "Corrección"
+        FINAL = "FINAL", "Final"
 
     articulo = models.ForeignKey(
         Articulo,
@@ -211,27 +247,39 @@ class VersionArticulo(models.Model):
         related_name="versiones",
         verbose_name="artículo",
     )
-    numero_version = models.PositiveSmallIntegerField("número de versión")
-    ruta_archivo = models.CharField("ruta privada del archivo", max_length=500)
-    cargado_por = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name="versiones_articulo_cargadas",
-        verbose_name="cargado por",
-    )
-    fecha_carga = models.DateTimeField("fecha de carga", auto_now_add=True)
+    tipo = models.CharField("tipo", max_length=20, choices=Tipo.choices)
+
+    # Número consecutivo de la versión dentro del artículo: 1, 2, 3...
+    numero = models.PositiveSmallIntegerField("número de versión")
+
+    # Ruta del archivo dentro del bucket, por ejemplo "articulos/7/<uuid>.pdf".
+    ruta_pdf = models.CharField("ruta del PDF", max_length=500)
+
+    fecha_subida = models.DateTimeField("fecha de subida", auto_now_add=True)
 
     class Meta:
         db_table = "version_articulo"
-        verbose_name = "versión de artículo"
-        verbose_name_plural = "versiones de artículo"
-        ordering = ["articulo_id", "numero_version"]
+        verbose_name = "versión del artículo"
+        verbose_name_plural = "versiones del artículo"
+        ordering = ["articulo", "numero"]
+
+        # Reglas también en la base de datos (HU-16, criterio 2):
+        #   - un artículo no repite un número de versión;
+        #   - los números empiezan en 1;
+        #   - la versión INICIAL es siempre la número 1. Junto con la primera
+        #     regla, esto impide que un artículo tenga dos versiones iniciales.
         constraints = [
             models.UniqueConstraint(
-                fields=["articulo", "numero_version"],
-                name="uniq_version_articulo_numero",
+                fields=["articulo", "numero"], name="uk_version_articulo_numero"
+            ),
+            models.CheckConstraint(
+                condition=Q(numero__gte=1), name="ck_version_articulo_numero_positivo"
+            ),
+            models.CheckConstraint(
+                condition=~Q(tipo="INICIAL") | Q(numero=1),
+                name="ck_version_articulo_inicial_es_la_uno",
             ),
         ]
 
     def __str__(self):
-        return f"Artículo #{self.articulo_id}, versión {self.numero_version}"
+        return f"Artículo #{self.articulo_id}, versión {self.numero} ({self.get_tipo_display()})"

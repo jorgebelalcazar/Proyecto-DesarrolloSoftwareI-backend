@@ -4,7 +4,12 @@ Rutas del dominio de artículos. Se montan bajo /api/articulos/ en config/urls.p
 
 from django.urls import path
 
-from .views import ArticulosView, CoautoresArticuloView, MisArticulosView
+from .views import (
+    ArticulosView,
+    CoautoresArticuloView,
+    MisArticulosView,
+    SubirVersionInicialView,
+)
 
 app_name = "articulos"
 
@@ -18,4 +23,7 @@ urlpatterns = [
 
     # GET y PUT /api/articulos/{id}/coautores/   (HU-15) Coautores del artículo.
     path("<int:pk>/coautores/", CoautoresArticuloView.as_view(), name="coautores"),
+
+    # POST /api/articulos/{id}/versiones/   (HU-16) PDF inicial del artículo.
+    path("<int:pk>/versiones/", SubirVersionInicialView.as_view(), name="versiones"),
 ]
