@@ -5,6 +5,7 @@ Contenido:
   - CoautorSerializer y validar_coautores: firmantes del artículo (HU-15).
   - CrearArticuloSerializer: postular un artículo, con sus coautores (HU-14 y HU-15).
   - CoautoresArticuloSerializer: reemplazar la lista de coautores (HU-15).
+  - ArticuloResumenSerializer: una fila de los listados de artículos (HU-17).
 """
 
 from django.db import transaction
@@ -250,3 +251,38 @@ class CrearArticuloSerializer(serializers.ModelSerializer):
         datos = super().to_representation(instance)
         datos["linea_tematica"] = LineaTematicaSerializer(instance.linea_tematica).data
         return datos
+
+
+# ===========================================================================
+# HU-17: LISTADOS DE ARTÍCULOS
+# ===========================================================================
+class ArticuloResumenSerializer(serializers.ModelSerializer):
+    """
+    Datos resumidos de un artículo, para una fila de tabla (HU-17).
+
+    Es lo que muestra la tabla "Mis artículos": título, línea temática,
+    estado y fecha. No incluye el resumen completo ni los coautores, que se
+    consultan en el detalle (HU-19): así la respuesta es liviana y rápida.
+
+    Formato de salida:
+      {
+        "id": 7, "titulo": "...",
+        "linea_tematica": {"id": 1, "nombre": "Sistemas Inteligentes"},
+        "estado": "POSTULADO", "estado_nombre": "Postulado",
+        "conferencia": 1, "fecha_postulacion": "2027-02-10T15:30:00-05:00"
+      }
+    """
+
+    # Línea temática con id y nombre, el formato de toda la API.
+    linea_tematica = LineaTematicaSerializer(read_only=True)
+
+    # Nombre del estado para mostrarlo; "estado" (el código) sirve para el color del badge.
+    estado_nombre = serializers.CharField(source="get_estado_display", read_only=True)
+
+    class Meta:
+        model = Articulo
+        fields = [
+            "id", "titulo", "linea_tematica", "estado", "estado_nombre",
+            "conferencia", "fecha_postulacion",
+        ]
+        read_only_fields = fields

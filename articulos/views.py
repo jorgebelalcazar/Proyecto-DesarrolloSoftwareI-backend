@@ -3,19 +3,24 @@ Vistas (endpoints) del dominio de artículos.
 
   POST /api/articulos/                      -> postular un artículo (HU-14).
   GET y PUT /api/articulos/{id}/coautores/  -> coautores del artículo (HU-15).
+  GET /api/articulos/mis-articulos/         -> artículos del autor (HU-17).
 """
 
 from django.db import transaction
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics
 from rest_framework.response import Response
 
+from core.paginacion import PaginacionEstandar
 from usuarios.models import Rol
 from usuarios.permisos import RequiereRolActivo
 
 from .excepciones import ArticuloNoEditable
+from .filters import ArticuloFilter
 from .models import Articulo
 from .permisos import EsAutorResponsable
 from .serializers import (
+    ArticuloResumenSerializer,
     CoautoresArticuloSerializer,
     CoautorSerializer,
     CrearArticuloSerializer,
@@ -123,3 +128,59 @@ class CoautoresArticuloView(generics.GenericAPIView):
             guardar_coautores(articulo, serializer.validated_data["coautores"])
 
         return self.respuesta(articulo)
+
+
+class MisArticulosView(generics.ListAPIView):
+    """
+    GET /api/articulos/mis-articulos/   (HU-17)
+
+    Lista paginada de los artículos que postuló el usuario del token, del más
+    reciente al más antiguo, para hacer seguimiento a sus envíos.
+
+    Privacidad (HU-17, criterio 1): la consulta SIEMPRE se filtra por
+    autor_responsable = usuario del token. No hay ningún parámetro para pedir
+    los artículos de otra persona.
+
+    Filtros (HU-17, criterio 3), combinables entre sí y con la paginación:
+      - ?estado=POSTULADO
+      - ?linea_tematica=1
+      - ?page=2&page_size=20
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo AUTOR.
+
+    Respuestas:
+      - 200 OK:           página de artículos (count, next, previous, results).
+      - 400 Bad Request:  un filtro con un valor que no existe.
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es AUTOR.
+    """
+
+    serializer_class = ArticuloResumenSerializer
+    pagination_class = PaginacionEstandar
+    permission_classes = [RequiereRolActivo]
+    roles_permitidos = [Rol.Nombre.AUTOR]
+
+    # Filtros por estado y línea temática; un valor inválido responde 400.
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = ArticuloFilter
+
+    def get_queryset(self):
+        """
+        Artículos del usuario del token.
+
+        select_related (HU-17, criterio 2: respuesta en <= 1.5 s) trae la
+        línea temática en la MISMA consulta, con un JOIN. Sin esto, la tabla
+        haría una consulta adicional por cada artículo para leer el nombre
+        de su línea (el problema N+1).
+
+        El orden incluye "id" para que la paginación sea estable: dos
+        artículos postulados en el mismo instante no se repiten ni se
+        pierden entre páginas.
+        """
+        return (
+            Articulo.objects.filter(autor_responsable=self.request.user)
+            .select_related("linea_tematica")
+            .order_by("-fecha_postulacion", "-id")
+        )
