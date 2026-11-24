@@ -11,8 +11,9 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
-from .models import LineaTematica
-from .serializers import LineaTematicaSerializer
+from .models import CriterioEvaluacion, LineaTematica
+from .serializers import CriterioEvaluacionSerializer, LineaTematicaSerializer
+from usuarios.permisos import IsAdminOrComitePermission
 
 
 @api_view(["GET"])
@@ -62,3 +63,14 @@ class LineaTematicaListView(generics.ListAPIView):
     # Meta.ordering del modelo LineaTematica.
     queryset = LineaTematica.objects.all()
     serializer_class = LineaTematicaSerializer
+
+
+class CriterioEvaluacionListView(generics.ListAPIView):
+    """GET /api/criterios-evaluacion/ devuelve la rúbrica activa al comité."""
+
+    serializer_class = CriterioEvaluacionSerializer
+    permission_classes = [IsAdminOrComitePermission]
+
+    def get_queryset(self):
+        """Solo incluye criterios habilitados, en el orden definido por el comité."""
+        return CriterioEvaluacion.objects.filter(activo=True)

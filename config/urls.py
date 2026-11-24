@@ -9,7 +9,7 @@ app sin tocar este archivo.
 from django.contrib import admin
 from django.urls import include, path
 
-from core.views import LineaTematicaListView, salud
+from core.views import CriterioEvaluacionListView, LineaTematicaListView, salud
 
 urlpatterns = [
     # Panel de administración de Django.
@@ -20,6 +20,9 @@ urlpatterns = [
 
     # Catálogo de líneas temáticas (HU-02.8).
     path("api/lineas-tematicas/", LineaTematicaListView.as_view(), name="lineas-tematicas"),
+
+    # Catálogo de criterios activos para la rúbrica (HU-22).
+    path("api/criterios-evaluacion/", CriterioEvaluacionListView.as_view(), name="criterios-evaluacion"),
 
     # API del dominio de usuarios: registro, creación, consulta, etc.
     path("api/usuarios/", include("usuarios.urls")),

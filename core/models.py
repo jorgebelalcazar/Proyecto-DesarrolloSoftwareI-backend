@@ -40,3 +40,26 @@ class LineaTematica(models.Model):
     def __str__(self):
         # Texto que representa al objeto en el panel y en la consola.
         return self.nombre
+
+
+class CriterioEvaluacion(models.Model):
+    """Criterio editable de la rúbrica para evaluar artículos."""
+
+    nombre = models.CharField("nombre", max_length=120, unique=True)
+    descripcion = models.TextField("descripción", blank=True)
+    peso = models.PositiveSmallIntegerField("peso porcentual")
+    orden = models.PositiveSmallIntegerField("orden", default=1)
+    activo = models.BooleanField("activo", default=True)
+
+    class Meta:
+        db_table = "criterio_evaluacion"
+        verbose_name = "criterio de evaluación"
+        verbose_name_plural = "criterios de evaluación"
+        ordering = ["orden", "id"]
+        constraints = [models.CheckConstraint(
+            condition=models.Q(peso__lte=100),
+            name="ck_criterio_evaluacion_peso_max_100",
+        )]
+
+    def __str__(self):
+        return self.nombre

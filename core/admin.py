@@ -7,7 +7,7 @@ sin escribir SQL. Solo pueden entrar los administradores.
 
 from django.contrib import admin
 
-from .models import LineaTematica
+from .models import CriterioEvaluacion, LineaTematica
 
 
 # @admin.register conecta el modelo con su configuración en el panel.
@@ -18,3 +18,13 @@ class LineaTematicaAdmin(admin.ModelAdmin):
 
     # Habilita el buscador por nombre.
     search_fields = ("nombre",)
+
+
+@admin.register(CriterioEvaluacion)
+class CriterioEvaluacionAdmin(admin.ModelAdmin):
+    """Permite al equipo configurar los criterios sin cambiar código."""
+
+    list_display = ("nombre", "peso", "orden", "activo")
+    list_filter = ("activo",)
+    search_fields = ("nombre", "descripcion")
+    ordering = ("orden", "id")
