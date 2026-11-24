@@ -75,9 +75,11 @@ class SubirVersionInicialView(APIView):
 
     def post(self, request, articulo_id):
         """Guarda el PDF y registra la versión inicial del artículo."""
+        # Paso 1: comprobar que el artículo pertenece al autor autenticado.
         articulo = get_object_or_404(
             Articulo, pk=articulo_id, autor_responsable=request.user
         )
+        # Paso 2: exigir el archivo y validar formato, firma y tamaño.
         archivo = request.FILES.get("archivo")
         if archivo is None:
             return Response(
@@ -85,6 +87,7 @@ class SubirVersionInicialView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Paso 3: impedir que se reemplace una versión inicial existente.
         validar_pdf(archivo)
         if VersionArticulo.objects.filter(articulo=articulo, numero_version=1).exists():
             return Response(
@@ -92,6 +95,7 @@ class SubirVersionInicialView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Paso 4: subir el archivo privado y traducir fallos del proveedor.
         try:
             ruta = subir_pdf_articulo(articulo.id, archivo)
         except ImproperlyConfigured as error:
@@ -105,6 +109,7 @@ class SubirVersionInicialView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        # Paso 5: registrar la versión; compensar la subida si falla la BD.
         try:
             with transaction.atomic():
                 version = VersionArticulo.objects.create(
@@ -127,6 +132,7 @@ class SubirVersionInicialView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        # Paso 6: devolver los datos públicos de la versión creada.
         return Response(
             {
                 "id": version.id,
