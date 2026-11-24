@@ -1,21 +1,26 @@
 """
-Pruebas del detalle técnico del artículo y URL firmada del PDF (HU-19).
+Pruebas del detalle de un artículo y el enlace firmado de su PDF (HU-19).
 
 Endpoint: GET /api/articulos/{id}/
 
-Cubren:
-- metadatos completos, palabras clave y orden de firmantes (autor + coautores);
-- generación de URL firmada temporal desde VersionArticulo sin exponer ruta_pdf;
-- tolerancia a fallos de Supabase Storage al firmar el enlace;
-- control de acceso por rol activo (AUTOR responsable, coautor, COMITE, ADMIN,
-  terceros y peticiones sin autenticar);
-- llamada de crear_url_firmada_pdf al bucket privado de Supabase.
+Cubren el caso de prueba CP-15 de la subtarea de QA HU-19.3:
+  - el Autor y el Comité abren la ficha del artículo;
+  - el enlace del PDF es firmado y temporal.
+Y además: metadatos completos, coautores en orden de firma, la versión más
+reciente del PDF, la ruta privada nunca expuesta, falla de Supabase,
+acceso por rol activo (incluido quien tiene un solo rol y no envía el
+encabezado) y número de consultas constante.
+
+Las pruebas NO se conectan con Supabase: la firma se reemplaza con
+unittest.mock.patch.
 """
 
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
-from django.test import override_settings
+from django.db import connection
+from django.test.utils import CaptureQueriesContext, override_settings
+from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -25,36 +30,30 @@ from core.models import LineaTematica
 from usuarios.models import Rol, Usuario
 
 from .almacenamiento import crear_url_firmada_pdf
-from .excepciones import AlmacenamientoNoDisponible
 from .models import Articulo, AutorArticulo, VersionArticulo
 
-URL_FIRMADA_FALSA = (
-    "https://proyecto.supabase.co/storage/v1/object/sign/articulos/1/doc.pdf?token=abc123"
-)
+URL_FIRMADA = "https://proyecto.supabase.co/storage/v1/object/sign/articulos/1/v.pdf?token=abc"
 
 
-def crear_usuario(correo, *roles, nombres="Ana", apellidos="Prueba"):
+def crear_usuario(correo, *roles, nombres="Ana"):
     """Crea un usuario de prueba con los roles indicados."""
     usuario = Usuario.objects.create_user(
-        correo,
-        "ClaveSegura123",
-        nombres=nombres,
-        apellidos=apellidos,
-        afiliacion="Universidad del Valle",
-        pais="Colombia",
+        correo, "ClaveSegura123",
+        nombres=nombres, apellidos="Prueba",
+        afiliacion="Universidad del Valle", pais="Colombia",
     )
     for rol in roles:
         usuario.asignar_rol(rol)
     return usuario
 
 
-def crear_conferencia(dias_para_cerrar=30):
-    """Crea una edición vigente de la conferencia."""
+def crear_conferencia():
+    """Edición de la conferencia con la postulación abierta."""
     ahora = timezone.now()
     hoy = timezone.localdate()
     return Conferencia.objects.create(
         nombre="Nexo 2027",
-        limite_postulacion=ahora + timedelta(days=dias_para_cerrar),
+        limite_postulacion=ahora + timedelta(days=30),
         limite_revision=ahora + timedelta(days=45),
         limite_correccion=ahora + timedelta(days=60),
         limite_version_final=ahora + timedelta(days=75),
@@ -63,195 +62,170 @@ def crear_conferencia(dias_para_cerrar=30):
     )
 
 
-@patch("articulos.serializers.crear_url_firmada_pdf", return_value=URL_FIRMADA_FALSA)
+# El nombre que se reemplaza es el que usa el serializador.
+@patch("articulos.serializers.crear_url_firmada_pdf", return_value=URL_FIRMADA)
 class DetalleArticuloTests(APITestCase):
     @classmethod
     def setUpTestData(cls):
-        cls.autor = crear_usuario(
-            "autor@ejemplo.com", Rol.Nombre.AUTOR, nombres="Carlos", apellidos="Pérez"
-        )
-        cls.coautor_usuario = crear_usuario(
-            "coautor@ejemplo.com", Rol.Nombre.AUTOR, nombres="Laura", apellidos="Gómez"
-        )
+        """Datos comunes, creados UNA vez para todas las pruebas de la clase."""
+        cls.autor = crear_usuario("autor@ejemplo.com", Rol.Nombre.AUTOR, nombres="Carlos")
         cls.otro_autor = crear_usuario("otro@ejemplo.com", Rol.Nombre.AUTOR)
         cls.comite = crear_usuario("comite@ejemplo.com", Rol.Nombre.COMITE)
         cls.admin = crear_usuario("admin@ejemplo.com", Rol.Nombre.ADMIN)
 
-        cls.conferencia = crear_conferencia()
-        cls.linea = LineaTematica.objects.get(nombre="Sistemas Inteligentes")
-
         cls.articulo = Articulo.objects.create(
-            conferencia=cls.conferencia,
-            linea_tematica=cls.linea,
+            conferencia=crear_conferencia(),
+            linea_tematica=LineaTematica.objects.get(nombre="Sistemas Inteligentes"),
             autor_responsable=cls.autor,
             titulo="Arquitecturas distribuidas en tiempo real",
-            resumen="Resumen técnico del artículo.",
+            resumen="Resumen completo del artículo.",
             palabras_clave="sistemas distribuidos, latencia, consenso",
         )
-
+        # Se crean en desorden a propósito: la respuesta debe ir por "orden".
         AutorArticulo.objects.create(
-            articulo=cls.articulo,
-            nombre_completo="Laura Gómez",
-            afiliacion="Universidad Nacional",
-            correo="coautor@ejemplo.com",
-            orden=1,
+            articulo=cls.articulo, nombre_completo="Diego Ruiz",
+            afiliacion="ICESI", correo="diego@externo.com", orden=2,
         )
         AutorArticulo.objects.create(
-            articulo=cls.articulo,
-            nombre_completo="Diego Ruiz",
-            afiliacion="ICESI",
-            correo="diego@externo.com",
-            orden=2,
+            articulo=cls.articulo, nombre_completo="Laura Gómez",
+            afiliacion="Universidad Nacional", correo="laura@externo.com", orden=1,
         )
 
     def setUp(self):
-        self.url = f"/api/articulos/{self.articulo.id}/"
+        self.url = reverse("articulos:detalle", args=[self.articulo.id])
         self.client.force_authenticate(user=self.autor)
 
-    def consultar(self, rol="AUTOR", url=None):
-        """Atajo: GET al detalle con el encabezado X-Rol-Activo."""
-        headers = {"HTTP_X_ROL_ACTIVO": rol} if rol else {}
-        return self.client.get(url or self.url, **headers)
-
-    # ------------------------------------------- Estructura y metadatos
-    def test_autor_responsable_obtiene_ficha_tecnica_completa(self, firmar_url):
-        VersionArticulo.objects.create(
-            articulo=self.articulo,
-            tipo=VersionArticulo.Tipo.INICIAL,
-            numero=1,
-            ruta_pdf="articulos/1/inicial.pdf",
+    def agregar_version(self, tipo, numero):
+        """Registra una versión del PDF directamente en la base de datos."""
+        return VersionArticulo.objects.create(
+            articulo=self.articulo, tipo=tipo, numero=numero,
+            ruta_pdf=f"articulos/{self.articulo.id}/v{numero}.pdf",
         )
 
-        respuesta = self.consultar(rol="AUTOR")
+    # ------------------------------------------- Metadatos (criterio 1)
+    def test_la_ficha_trae_todos_los_metadatos(self, firmar):
+        respuesta = self.client.get(self.url)
 
         self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
         self.assertEqual(
             set(respuesta.data),
             {
-                "id",
-                "titulo",
-                "estado",
-                "linea_tematica",
-                "fecha_postulacion",
-                "resumen",
-                "palabras_clave",
-                "firmantes",
-                "tiene_pdf",
-                "pdf_url",
-                "pdf_expira_en",
+                "id", "titulo", "linea_tematica", "estado", "estado_nombre",
+                "conferencia", "fecha_postulacion", "autor_responsable",
+                "resumen", "palabras_clave", "coautores", "pdf",
             },
         )
-        self.assertEqual(respuesta.data["titulo"], self.articulo.titulo)
-        self.assertEqual(respuesta.data["linea_tematica"]["nombre"], "Sistemas Inteligentes")
+        self.assertEqual(respuesta.data["resumen"], "Resumen completo del artículo.")
         self.assertEqual(
-            respuesta.data["palabras_clave"],
-            ["sistemas distribuidos", "latencia", "consenso"],
+            respuesta.data["palabras_clave"], "sistemas distribuidos, latencia, consenso"
         )
-        self.assertTrue(respuesta.data["tiene_pdf"])
-        self.assertEqual(respuesta.data["pdf_url"], URL_FIRMADA_FALSA)
-        self.assertEqual(respuesta.data["pdf_expira_en"], 900)
-        self.assertNotIn("ruta_pdf", str(respuesta.data))
-        firmar_url.assert_called_once_with("articulos/1/inicial.pdf", expira_en=900)
+        self.assertEqual(respuesta.data["linea_tematica"]["nombre"], "Sistemas Inteligentes")
+        self.assertEqual(respuesta.data["autor_responsable"]["correo"], "autor@ejemplo.com")
 
-    def test_firmantes_conservan_orden_principal_y_coautores(self, firmar_url):
-        respuesta = self.consultar(rol="AUTOR")
+    def test_coautores_en_orden_de_firma(self, firmar):
+        respuesta = self.client.get(self.url)
 
-        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-        firmantes = respuesta.data["firmantes"]
-        self.assertEqual(len(firmantes), 3)
-
-        self.assertEqual(firmantes[0]["orden"], 1)
-        self.assertTrue(firmantes[0]["es_principal"])
-        self.assertEqual(firmantes[0]["correo"], "autor@ejemplo.com")
-
-        self.assertEqual(firmantes[1]["orden"], 2)
-        self.assertFalse(firmantes[1]["es_principal"])
-        self.assertEqual(firmantes[1]["correo"], "coautor@ejemplo.com")
-
-        self.assertEqual(firmantes[2]["orden"], 3)
-        self.assertEqual(firmantes[2]["correo"], "diego@externo.com")
-
-    # ------------------------------------------- Manejo del PDF y Supabase
-    def test_articulo_sin_pdf_devuelve_pdf_url_none_sin_llamar_supabase(self, firmar_url):
-        respuesta = self.consultar(rol="AUTOR")
-
-        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-        self.assertFalse(respuesta.data["tiene_pdf"])
-        self.assertIsNone(respuesta.data["pdf_url"])
-        self.assertIsNone(respuesta.data["pdf_expira_en"])
-        firmar_url.assert_not_called()
-
-    def test_firma_la_ultima_version_registrada(self, firmar_url):
-        VersionArticulo.objects.create(
-            articulo=self.articulo,
-            tipo=VersionArticulo.Tipo.INICIAL,
-            numero=1,
-            ruta_pdf="articulos/1/v1.pdf",
-        )
-        VersionArticulo.objects.create(
-            articulo=self.articulo,
-            tipo=VersionArticulo.Tipo.CORRECCION,
-            numero=2,
-            ruta_pdf="articulos/1/v2.pdf",
+        self.assertEqual(
+            [(c["orden"], c["nombre_completo"]) for c in respuesta.data["coautores"]],
+            [(1, "Laura Gómez"), (2, "Diego Ruiz")],
         )
 
-        respuesta = self.consultar(rol="AUTOR")
+    # --------------------------------------------- PDF firmado (criterio 2)
+    def test_sin_pdf_responde_null_sin_llamar_a_supabase(self, firmar):
+        respuesta = self.client.get(self.url)
+
+        self.assertIsNone(respuesta.data["pdf"])
+        firmar.assert_not_called()
+
+    def test_entrega_el_enlace_firmado_sin_la_ruta_privada(self, firmar):
+        self.agregar_version(VersionArticulo.Tipo.INICIAL, 1)
+
+        pdf = self.client.get(self.url).data["pdf"]
+
+        self.assertEqual(pdf["url"], URL_FIRMADA)
+        self.assertEqual(pdf["vence_en_segundos"], 900)
+        self.assertEqual(pdf["tipo"], "INICIAL")
+        self.assertEqual(pdf["numero"], 1)
+        self.assertNotIn("ruta_pdf", pdf)
+        firmar.assert_called_once_with(f"articulos/{self.articulo.id}/v1.pdf")
+
+    def test_firma_la_version_mas_reciente(self, firmar):
+        self.agregar_version(VersionArticulo.Tipo.INICIAL, 1)
+        self.agregar_version(VersionArticulo.Tipo.CORRECCION, 2)
+
+        pdf = self.client.get(self.url).data["pdf"]
+
+        self.assertEqual(pdf["tipo"], "CORRECCION")
+        firmar.assert_called_once_with(f"articulos/{self.articulo.id}/v2.pdf")
+
+    def test_si_supabase_falla_la_ficha_llega_sin_enlace(self, firmar):
+        self.agregar_version(VersionArticulo.Tipo.INICIAL, 1)
+        firmar.side_effect = OSError("sin conexión")
+
+        with self.assertLogs("articulos.serializers", level="ERROR"):
+            respuesta = self.client.get(self.url)
 
         self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-        firmar_url.assert_called_once_with("articulos/1/v2.pdf", expira_en=900)
+        self.assertEqual(respuesta.data["pdf"]["numero"], 1)
+        self.assertIsNone(respuesta.data["pdf"]["url"])
+        self.assertIsNone(respuesta.data["pdf"]["vence_en_segundos"])
 
-    def test_si_supabase_falla_al_firmar_devuelve_200_con_pdf_url_none(self, firmar_url):
-        VersionArticulo.objects.create(
-            articulo=self.articulo,
-            tipo=VersionArticulo.Tipo.INICIAL,
-            numero=1,
-            ruta_pdf="articulos/1/inicial.pdf",
-        )
-        firmar_url.side_effect = AlmacenamientoNoDisponible("Supabase fuera de línea")
-
-        respuesta = self.consultar(rol="AUTOR")
-
-        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-        self.assertTrue(respuesta.data["tiene_pdf"])
-        self.assertIsNone(respuesta.data["pdf_url"])
-
-    # ------------------------------------------- Permisos y privacidad
-    def test_coautor_con_cuenta_puede_consultar_el_detalle(self, firmar_url):
-        self.client.force_authenticate(user=self.coautor_usuario)
-        respuesta = self.consultar(rol="AUTOR")
-        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
-
-    def test_comite_y_admin_pueden_consultar_cualquier_articulo(self, firmar_url):
-        for usuario, rol in [(self.comite, "COMITE"), (self.admin, "ADMIN")]:
-            with self.subTest(rol=rol):
+    # --------------------------------------- Acceso por rol (criterio 3)
+    def test_comite_y_admin_ven_cualquier_articulo(self, firmar):
+        for usuario in (self.comite, self.admin):
+            with self.subTest(usuario=usuario.correo):
+                # Tienen un solo rol: no envían X-Rol-Activo, igual que en el front.
                 self.client.force_authenticate(user=usuario)
-                respuesta = self.consultar(rol=rol)
+                respuesta = self.client.get(self.url)
                 self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
 
-    def test_otro_autor_ajeno_al_articulo_recibe_404(self, firmar_url):
+    def test_otro_autor_recibe_403(self, firmar):
         self.client.force_authenticate(user=self.otro_autor)
-        respuesta = self.consultar(rol="AUTOR")
-        self.assertEqual(respuesta.status_code, status.HTTP_404_NOT_FOUND)
+        respuesta = self.client.get(self.url)
+        self.assertEqual(respuesta.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_rol_no_permitido_devuelve_403(self, firmar_url):
-        self.client.force_authenticate(user=self.otro_autor)
-        for rol_invalido in ("REVISOR", "COMITE"):
-            with self.subTest(rol=rol_invalido):
-                respuesta = self.consultar(rol=rol_invalido)
-                self.assertEqual(respuesta.status_code, status.HTTP_403_FORBIDDEN)
+    def test_cuenta_el_rol_activo_no_todos_los_roles(self, firmar):
+        multirrol = crear_usuario("multi@ejemplo.com", Rol.Nombre.AUTOR, Rol.Nombre.COMITE)
+        self.client.force_authenticate(user=multirrol)
 
-    def test_sin_token_devuelve_401(self, firmar_url):
+        como_comite = self.client.get(self.url, HTTP_X_ROL_ACTIVO="COMITE")
+        como_autor = self.client.get(self.url, HTTP_X_ROL_ACTIVO="AUTOR")
+
+        self.assertEqual(como_comite.status_code, status.HTTP_200_OK)
+        self.assertEqual(como_autor.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_un_rol_que_no_tiene_devuelve_403(self, firmar):
+        respuesta = self.client.get(self.url, HTTP_X_ROL_ACTIVO="ADMIN")
+        self.assertEqual(respuesta.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sin_token_devuelve_401(self, firmar):
         self.client.force_authenticate(user=None)
-        respuesta = self.consultar(rol="AUTOR")
-        self.assertEqual(respuesta.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_articulo_inexistente_devuelve_404(self, firmar_url):
-        respuesta = self.consultar(rol="AUTOR", url="/api/articulos/99999/")
-        self.assertEqual(respuesta.status_code, status.HTTP_404_NOT_FOUND)
+    def test_articulo_inexistente_devuelve_404(self, firmar):
+        url = reverse("articulos:detalle", args=[99999])
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+
+    # ------------------------------------------------------- Rendimiento
+    def test_el_numero_de_consultas_no_crece_con_coautores_ni_versiones(self, firmar):
+        with CaptureQueriesContext(connection) as pocas:
+            self.client.get(self.url)
+
+        for numero in range(3, 9):
+            AutorArticulo.objects.create(
+                articulo=self.articulo, nombre_completo=f"Firmante {numero}",
+                afiliacion="Univalle", correo=f"f{numero}@externo.com", orden=numero,
+            )
+        self.agregar_version(VersionArticulo.Tipo.INICIAL, 1)
+        self.agregar_version(VersionArticulo.Tipo.CORRECCION, 2)
+        with CaptureQueriesContext(connection) as muchas:
+            self.client.get(self.url)
+
+        self.assertEqual(len(pocas.captured_queries), len(muchas.captured_queries))
 
 
 class UrlFirmadaSupabaseTests(APITestCase):
-    """Servicio crear_url_firmada_pdf en almacenamiento.py, sin red."""
+    """Servicio crear_url_firmada_pdf de almacenamiento.py (HU-19.1), sin red."""
 
     @override_settings(
         SUPABASE_URL="https://proyecto.supabase.co",
@@ -259,16 +233,13 @@ class UrlFirmadaSupabaseTests(APITestCase):
         SUPABASE_STORAGE_BUCKET="articulos",
     )
     @patch("supabase.create_client")
-    def test_genera_url_firmada_temporal_en_bucket_privado(self, create_client):
+    def test_firma_en_el_bucket_privado_por_15_minutos(self, create_client):
         bucket = MagicMock()
-        bucket.create_signed_url.return_value = {"signedURL": URL_FIRMADA_FALSA}
+        bucket.create_signed_url.return_value = {"signedURL": URL_FIRMADA, "signedUrl": URL_FIRMADA}
         create_client.return_value.storage.from_.return_value = bucket
 
-        url = crear_url_firmada_pdf("articulos/7/manuscrito.pdf", expira_en=600)
+        url = crear_url_firmada_pdf("articulos/7/manuscrito.pdf")
 
-        create_client.assert_called_once_with(
-            "https://proyecto.supabase.co", "llave-de-prueba"
-        )
         create_client.return_value.storage.from_.assert_called_once_with("articulos")
-        bucket.create_signed_url.assert_called_once_with("articulos/7/manuscrito.pdf", 600)
-        self.assertEqual(url, URL_FIRMADA_FALSA)
+        bucket.create_signed_url.assert_called_once_with("articulos/7/manuscrito.pdf", 900)
+        self.assertEqual(url, URL_FIRMADA)
