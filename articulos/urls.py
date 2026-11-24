@@ -1,18 +1,15 @@
 """
-Rutas de la API del dominio de artículos científicos.
+Rutas del dominio de artículos. Se montan bajo /api/articulos/ en config/urls.py.
 """
 
 from django.urls import path
 
-from .views import CrearArticuloView, GestionCoautoresArticuloView
+from .views import CrearArticuloView
 
 app_name = "articulos"
 
 urlpatterns = [
-    path("", CrearArticuloView.as_view(), name="crear-articulo"),
-    path(
-        "<int:articulo_id>/coautores/",
-        GestionCoautoresArticuloView.as_view(),
-        name="gestion-coautores",
-    ),
+    # POST /api/articulos/   (HU-14) Postular un artículo.
+    # La HU-18 agregará aquí mismo el GET del catálogo de artículos.
+    path("", CrearArticuloView.as_view(), name="lista"),
 ]

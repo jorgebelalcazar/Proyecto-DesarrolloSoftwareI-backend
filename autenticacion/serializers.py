@@ -6,13 +6,15 @@ Contenido:
   - LoginSerializer:          inicio de sesión (HU-03).
   - UsuarioSesionSerializer:  datos del usuario en la sesión (HU-03 y HU-04).
   - SolicitarPinSerializer:   solicitud del PIN de recuperación (HU-06).
+  - ConfirmarPinSerializer:   confirmación del PIN y nueva clave (HU-07).
+  - LogoutSerializer:         cierre de sesión (HU-05).
 """
 
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 
 from usuarios.models import Usuario
-
+from usuarios.serializers import validar_fortaleza_clave
 from .captcha import CaptchaNoDisponible, verificar_captcha
 from .excepciones import CredencialesInvalidas, ServicioCaptchaNoDisponible
 
@@ -134,3 +136,61 @@ class SolicitarPinSerializer(serializers.Serializer):
         """Verifica el CAPTCHA. El correo ya lo validó EmailField (formato)."""
         validar_captcha(datos["captcha"], self.context.get("request"))
         return datos
+
+
+class ConfirmarPinSerializer(serializers.Serializer):
+    """
+    Datos del formulario "Cambiar mi clave con el PIN" (HU-07).
+
+    Entrada (JSON):
+      - correo:             correo de la cuenta (el mismo del paso 1).
+      - pin:                los 6 dígitos que llegaron por correo.
+      - clave:              la nueva clave.
+      - confirmacion_clave: la nueva clave, otra vez.
+
+    Aquí solo se valida el FORMATO. El PIN se compara con el hash en el
+    servicio confirmar_recuperacion. Así, una clave débil o un PIN mal
+    escrito se rechazan sin gastar ninguno de los 3 intentos del código.
+    """
+
+    correo = serializers.EmailField()
+
+    # RegexField: el PIN debe ser exactamente 6 dígitos ("^" inicio, "$" final).
+    pin = serializers.RegexField(
+        r"^\d{6}$",
+        write_only=True,
+        error_messages={"invalid": "El código debe tener exactamente 6 dígitos."},
+    )
+
+    # Mismo manejo de la clave que en el registro (HU-01).
+    clave = serializers.CharField(
+        write_only=True, trim_whitespace=False, style={"input_type": "password"}
+    )
+    confirmacion_clave = serializers.CharField(
+        write_only=True, trim_whitespace=False, style={"input_type": "password"}
+    )
+
+    def validate_clave(self, valor):
+        """La nueva clave cumple las mismas reglas que la del registro."""
+        return validar_fortaleza_clave(valor)
+
+    def validate(self, datos):
+        """Verifica que la clave y su confirmación coincidan."""
+        if datos["clave"] != datos["confirmacion_clave"]:
+            raise serializers.ValidationError({"confirmacion_clave": "Las claves no coinciden."})
+        return datos
+
+
+class LogoutSerializer(serializers.Serializer):
+    """
+    Datos para cerrar la sesión (HU-05).
+
+    Entrada (JSON):
+      - refresh: el token de renovación que entregó el login.
+
+    Solo valida que llegue el campo. Si el token sirve o no, lo decide la
+    vista al intentar ponerlo en la lista negra.
+    """
+
+    # write_only: el token se recibe, pero nunca se devuelve.
+    refresh = serializers.CharField(write_only=True)

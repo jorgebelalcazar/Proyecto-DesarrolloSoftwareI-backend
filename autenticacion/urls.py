@@ -2,13 +2,13 @@
 Rutas de la autenticación. Se montan bajo /api/auth/ en config/urls.py.
 
 La recuperación de clave tiene dos pasos: solicitar-pin/ (HU-06) y
-confirmar-pin/ (HU-07, en la siguiente fase).
+confirmar-pin/ (HU-07). El cierre de sesión es logout/ (HU-05).
 """
 
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from .views import LoginView, SesionView, SolicitarPinView
+from .views import ConfirmarPinView, LoginView, LogoutView, SesionView, SolicitarPinView
 
 app_name = "autenticacion"
 
@@ -22,7 +22,14 @@ urlpatterns = [
 
     # GET  /api/auth/sesion/   Datos del usuario del token.
     path("sesion/", SesionView.as_view(), name="sesion"),
-    
+
     # POST /api/auth/solicitar-pin/   (HU-06) Envía el PIN de recuperación por correo.
     path("solicitar-pin/", SolicitarPinView.as_view(), name="solicitar-pin"),
+
+    # POST /api/auth/confirmar-pin/   (HU-07) Verifica el PIN y cambia la clave.
+    path("confirmar-pin/", ConfirmarPinView.as_view(), name="confirmar-pin"),
+
+    # POST /api/auth/logout/   (HU-05) Cierra la sesión: el token de renovación
+    # recibido pasa a la lista negra y ya no sirve en refresh/.
+    path("logout/", LogoutView.as_view(), name="logout"),
 ]

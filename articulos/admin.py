@@ -1,55 +1,38 @@
 """
-Configuración del panel administrativo para el dominio de artículos.
+Registro del dominio de artículos en el panel de administración.
 """
 
 from django.contrib import admin
 
-from .models import Articulo, HistorialEstado, AutorArticulo
+from .models import Articulo, HistorialEstado
+
+
+class HistorialEstadoInline(admin.TabularInline):
+    """Muestra el historial dentro de cada artículo, solo para consultar."""
+
+    model = HistorialEstado
+    extra = 0
+    can_delete = False
+    readonly_fields = ("estado_anterior", "estado_nuevo", "usuario", "observacion", "fecha")
+
+    def has_add_permission(self, request, obj=None):
+        """El historial lo escribe el sistema, no se agrega a mano."""
+        return False
 
 
 @admin.register(Articulo)
 class ArticuloAdmin(admin.ModelAdmin):
-    """Vista administrativa de artículos postulados."""
-
+    # Columnas de la lista de artículos.
     list_display = (
-        "id",
-        "titulo",
-        "linea_tematica",
-        "autor_responsable",
-        "estado",
-        "fecha_postulacion",
+        "id", "titulo", "conferencia", "linea_tematica",
+        "autor_responsable", "estado", "fecha_postulacion",
     )
-    list_filter = ("estado", "linea_tematica")
+
+    # Filtros del panel derecho.
+    list_filter = ("conferencia", "estado", "linea_tematica")
+
+    # Campos en los que busca el buscador.
     search_fields = ("titulo", "palabras_clave", "autor_responsable__correo")
 
-
-@admin.register(HistorialEstado)
-class HistorialEstadoAdmin(admin.ModelAdmin):
-    """Vista administrativa de la trazabilidad de estados de artículos."""
-
-    list_display = (
-        "id",
-        "articulo",
-        "estado_anterior",
-        "estado_nuevo",
-        "usuario",
-        "fecha_cambio",
-    )
-    list_filter = ("estado_nuevo",)
-    search_fields = ("articulo__titulo", "usuario__correo")
-
-
-@admin.register(AutorArticulo)
-class AutorArticuloAdmin(admin.ModelAdmin):
-    """Vista administrativa de los coautores/firmantes por artículo."""
-
-    list_display = (
-        "id",
-        "articulo",
-        "orden_firma",
-        "nombre_completo",
-        "correo",
-        "afiliacion",
-    )
-    list_filter = ("articulo",)
-    search_fields = ("nombre_completo", "correo", "afiliacion", "articulo__titulo")
+    # Historial de estados dentro del artículo.
+    inlines = (HistorialEstadoInline,)

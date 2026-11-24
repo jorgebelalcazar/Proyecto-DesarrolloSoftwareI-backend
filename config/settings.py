@@ -46,9 +46,13 @@ INSTALLED_APPS = [
     "core",
     "usuarios",  # Dominio de usuarios y acceso
     "rest_framework_simplejwt",  # Tokens JWT; se registra para usar sus mensajes en español
+    # Lista negra de tokens de renovación: el logout invalida el token (HU-05).
+    # Crea dos tablas propias; requiere "python manage.py migrate".
+    "rest_framework_simplejwt.token_blacklist",
     "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
-    "django_filters",
-    "articulos",  # Gestión y postulación de artículos científicos (HU-14)
+    "django_filters",  # Filtros por parámetros en la URL, como ?rol=AUTOR (HU-09)
+    "conferencias",  # Ediciones de la conferencia y plazos de cada etapa (HU-13)
+    "articulos",  # Postulación y gestión de artículos (HU-14 en adelante)
 ]
 
 # Modelo de usuario propio del proyecto.
@@ -227,10 +231,3 @@ DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "Nexo <no-responder@nexo.lo
 # Sin este límite, un servidor SMTP caído dejaría la petición esperando.
 EMAIL_TIMEOUT = 10
 
-
-# ---------------------------------------------------------------------------
-# Convocatoria y postulación de artículos (HU-14.2)
-# ---------------------------------------------------------------------------
-# Fecha límite de postulaciones en formato ISO 8601 (ej. "2026-12-31T23:59:59-05:00").
-# Si está vacía, no bloquea por fecha mientras se integra la configuración dinámica (HU-13).
-FECHA_LIMITE_POSTULACION = os.getenv("FECHA_LIMITE_POSTULACION", "")
