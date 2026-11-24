@@ -4,14 +4,14 @@ Rutas del dominio de artículos. Se montan bajo /api/articulos/ en config/urls.p
 
 from django.urls import path
 
-from .views import CoautoresArticuloView, CrearArticuloView, MisArticulosView
+from .views import ArticulosView, CoautoresArticuloView, MisArticulosView
 
 app_name = "articulos"
 
 urlpatterns = [
-    # POST /api/articulos/   (HU-14) Postular un artículo.
-    # La HU-18 agregará aquí mismo el GET del catálogo de artículos.
-    path("", CrearArticuloView.as_view(), name="lista"),
+    # GET y POST /api/articulos/   (HU-18 y HU-14) Catálogo para Admin y Comité;
+    # postulación para el Autor.
+    path("", ArticulosView.as_view(), name="lista"),
 
     # GET /api/articulos/mis-articulos/   (HU-17) Artículos del autor del token.
     path("mis-articulos/", MisArticulosView.as_view(), name="mis-articulos"),

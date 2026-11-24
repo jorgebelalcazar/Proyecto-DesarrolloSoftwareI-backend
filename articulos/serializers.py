@@ -6,6 +6,7 @@ Contenido:
   - CrearArticuloSerializer: postular un artículo, con sus coautores (HU-14 y HU-15).
   - CoautoresArticuloSerializer: reemplazar la lista de coautores (HU-15).
   - ArticuloResumenSerializer: una fila de los listados de artículos (HU-17).
+  - ArticuloCatalogoSerializer: una fila del catálogo, con su autor (HU-18).
 """
 
 from django.db import transaction
@@ -14,6 +15,7 @@ from rest_framework import serializers
 from conferencias.models import Conferencia
 from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
+from usuarios.models import Usuario
 
 from .excepciones import PostulacionCerrada
 from .models import Articulo, AutorArticulo, HistorialEstado, mensaje_plazo_vencido
@@ -285,4 +287,34 @@ class ArticuloResumenSerializer(serializers.ModelSerializer):
             "id", "titulo", "linea_tematica", "estado", "estado_nombre",
             "conferencia", "fecha_postulacion",
         ]
+        read_only_fields = fields
+
+
+class AutorResponsableSerializer(serializers.ModelSerializer):
+    """
+    Datos del autor responsable en el catálogo (HU-18).
+
+    Solo lo ven el Comité y el Administrador, que ya ven los correos en el
+    directorio de usuarios (HU-08). No incluye documento ni teléfono.
+    """
+
+    class Meta:
+        model = Usuario
+        fields = ["id", "nombres", "apellidos", "correo"]
+        read_only_fields = fields
+
+
+class ArticuloCatalogoSerializer(ArticuloResumenSerializer):
+    """
+    Una fila del catálogo de artículos para el Comité y el Administrador (HU-18).
+
+    Hereda las columnas de "Mis artículos" (HU-17) y agrega el autor
+    responsable, que en el catálogo sí hace falta porque hay artículos de
+    todos los autores.
+    """
+
+    autor_responsable = AutorResponsableSerializer(read_only=True)
+
+    class Meta(ArticuloResumenSerializer.Meta):
+        fields = ArticuloResumenSerializer.Meta.fields + ["autor_responsable"]
         read_only_fields = fields

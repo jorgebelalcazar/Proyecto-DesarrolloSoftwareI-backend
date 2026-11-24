@@ -2,6 +2,7 @@
 Vistas (endpoints) del dominio de artículos.
 
   POST /api/articulos/                      -> postular un artículo (HU-14).
+  GET  /api/articulos/                      -> catálogo con filtros (HU-18).
   GET y PUT /api/articulos/{id}/coautores/  -> coautores del artículo (HU-15).
   GET /api/articulos/mis-articulos/         -> artículos del autor (HU-17).
 """
@@ -9,6 +10,7 @@ Vistas (endpoints) del dominio de artículos.
 from django.db import transaction
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics
+from rest_framework.filters import SearchFilter
 from rest_framework.response import Response
 
 from core.paginacion import PaginacionEstandar
@@ -16,10 +18,11 @@ from usuarios.models import Rol
 from usuarios.permisos import RequiereRolActivo
 
 from .excepciones import ArticuloNoEditable
-from .filters import ArticuloFilter
+from .filters import ArticuloCatalogoFilter, ArticuloFilter
 from .models import Articulo
 from .permisos import EsAutorResponsable
 from .serializers import (
+    ArticuloCatalogoSerializer,
     ArticuloResumenSerializer,
     CoautoresArticuloSerializer,
     CoautorSerializer,
@@ -28,32 +31,74 @@ from .serializers import (
 )
 
 
-class CrearArticuloView(generics.CreateAPIView):
+class ArticulosView(generics.ListCreateAPIView):
     """
-    POST /api/articulos/   (HU-14)
+    GET y POST /api/articulos/   (HU-18 y HU-14)
 
-    Postula un artículo: lo crea en estado POSTULADO, a nombre del usuario
-    del token y en la edición vigente de la conferencia, y registra la
-    postulación en el historial de estados.
+    La misma ruta atiende dos operaciones, cada una para un rol distinto:
 
-    Requiere:
-      - Token JWT en el encabezado Authorization.
-      - Rol activo AUTOR (encabezado X-Rol-Activo, o AUTOR como único rol).
+    POST: postular un artículo (HU-14), solo con rol activo AUTOR.
+      Lo crea en estado POSTULADO, a nombre del usuario del token y en la
+      edición vigente de la conferencia, con sus coautores (HU-15) y la
+      primera fila del historial de estados.
 
-    Puede incluir sus coautores (HU-15): se guardan en la misma transacción.
+    GET: catálogo de TODOS los artículos (HU-18), solo con rol activo ADMIN
+      o COMITE, paginado y con filtros combinables (HU-18.2):
+        - ?linea_tematica=1
+        - ?estado=POSTULADO
+        - ?autor=5               id del autor responsable
+        - ?search=redes          texto parcial en título, resumen o palabras clave
+        - ?page=2&page_size=20
 
     Respuestas:
-      - 201 Created:      el artículo creado, con sus coautores.
-      - 400 Bad Request:  un campo inválido (error en el campo), o la
-                          postulación está cerrada (error en "detail").
+      - 200 OK:           GET; página de artículos (count, next, previous, results).
+      - 201 Created:      POST; el artículo creado, con sus coautores.
+      - 400 Bad Request:  POST con un campo inválido o la postulación cerrada;
+                          GET con un filtro de valor inexistente.
       - 401 Unauthorized: no se envió un token válido.
-      - 403 Forbidden:    el rol activo no es AUTOR.
+      - 403 Forbidden:    el rol activo no corresponde a la operación.
     """
 
-    queryset = Articulo.objects.all()
-    serializer_class = CrearArticuloSerializer
+    pagination_class = PaginacionEstandar
+
+    # Rol activo por operación; lo revisa RequiereRolActivo.
     permission_classes = [RequiereRolActivo]
-    roles_permitidos = [Rol.Nombre.AUTOR]
+
+    # Filtros exactos (HU-18.2) y búsqueda parcial por texto, sin importar mayúsculas.
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_class = ArticuloCatalogoFilter
+    search_fields = ["titulo", "resumen", "palabras_clave"]
+
+    @property
+    def roles_permitidos(self):
+        """
+        Roles que pueden usar el método de esta petición.
+
+        RequiereRolActivo lee este atributo de la vista. Como depende del
+        método, es una propiedad: postular es del Autor; el catálogo, de
+        quienes gestionan la conferencia.
+        """
+        if self.request.method == "POST":
+            return [Rol.Nombre.AUTOR]
+        return [Rol.Nombre.ADMIN, Rol.Nombre.COMITE]
+
+    def get_serializer_class(self):
+        """Datos completos para postular; filas resumidas para el catálogo."""
+        if self.request.method == "POST":
+            return CrearArticuloSerializer
+        return ArticuloCatalogoSerializer
+
+    def get_queryset(self):
+        """
+        Todos los artículos, del más reciente al más antiguo.
+
+        select_related (HU-18.1, criterio 3: respuesta en <= 1.5 s) trae la
+        línea temática y el autor responsable en la MISMA consulta, con dos
+        JOIN. Sin esto, cada fila haría dos consultas más (problema N+1).
+        """
+        return Articulo.objects.select_related("linea_tematica", "autor_responsable").order_by(
+            "-fecha_postulacion", "-id"
+        )
 
     def perform_create(self, serializer):
         """El autor responsable es siempre el usuario del token, nunca uno enviado."""
