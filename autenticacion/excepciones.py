@@ -39,7 +39,6 @@ class ServicioCaptchaNoDisponible(APIException):
     )
     default_code = "captcha_no_disponible"
 
-    
 
 class ServicioCorreoNoDisponible(APIException):
     """
@@ -55,3 +54,34 @@ class ServicioCorreoNoDisponible(APIException):
         "Intente de nuevo en unos minutos."
     )
     default_code = "correo_no_disponible"
+
+
+class PinInvalido(APIException):
+    """
+    El PIN no sirve para cambiar la clave. Responde 400 (HU-07).
+
+    El mensaje es el mismo para todos los casos (PIN incorrecto, vencido,
+    usado, sin intentos o correo inexistente), a propósito: así no se
+    revela si el correo existe ni cuántos intentos quedan.
+    """
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_detail = (
+        "El código no es válido o ya venció. "
+        "Verifíquelo o solicite uno nuevo."
+    )
+    default_code = "pin_invalido"
+
+
+class SesionNoValida(APIException):
+    """
+    El token de renovación no sirve para cerrar la sesión. Responde 401 (HU-05).
+
+    Casos: el token está mal formado, venció, ya se usó para cerrar la
+    sesión (está en la lista negra) o es un token de acceso en lugar de
+    uno de renovación. En todos, la sesión ya no se puede usar.
+    """
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    default_detail = "La sesión no es válida, ya venció o ya se cerró."
+    default_code = "sesion_no_valida"

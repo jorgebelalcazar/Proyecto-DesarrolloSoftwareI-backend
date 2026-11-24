@@ -5,15 +5,24 @@ Una vista recibe la petición HTTP, usa un serializador para validar los datos
 y devuelve la respuesta en JSON con el código de estado correspondiente.
 """
 
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics
 from rest_framework.permissions import AllowAny
 
 from core.paginacion import PaginacionEstandar
 
-from .models import Rol, Usuario
-from .permisos import IsAdminOrComitePermission, obtener_rol_activo
+from .excepciones import BajaNoPermitida
+from .filters import BusquedaDirectorio, UsuarioFilter
+from .models import Rol, SinAdministradorActivo, Usuario
+from .permisos import (
+    ComiteNoModificaAdministradores,
+    IsAdminOrComitePermission,
+    obtener_rol_activo,
+)
 from .serializers import (
     CrearUsuarioSerializer,
+    GestionUsuarioSerializer,
+    PerfilUsuarioSerializer,
     RegistroAutorSerializer,
     UsuarioDirectorioGestionSerializer,
     UsuarioDirectorioSerializer,
@@ -76,7 +85,7 @@ class CrearUsuarioView(generics.CreateAPIView):
 
 class ListarUsuariosView(generics.ListAPIView):
     """
-    GET /api/usuarios/   (HU-08)
+    GET /api/usuarios/   (HU-08 y HU-09)
 
     Directorio paginado de los usuarios registrados en la conferencia.
     Lo pueden consultar todos los roles (enunciado del proyecto), pero cada
@@ -91,8 +100,16 @@ class ListarUsuariosView(generics.ListAPIView):
       - Para un usuario con varios roles, el encabezado X-Rol-Activo; sin él
         recibe la vista de Autor, que es la de menor privilegio.
 
+    Filtros y búsqueda (HU-09), combinables entre sí y con la paginación:
+      - ?rol=COMITE           ADMIN, COMITE o AUTOR.
+      - ?especialidad=1       id de una línea temática.
+      - ?estado=false         true (activos) o false (desactivados).
+      - ?search=valle         texto en nombres, apellidos y afiliación; para
+                              ADMIN y COMITE, también en el correo.
+
     Respuestas:
       - 200 OK:           página de usuarios (count, next, previous, results).
+      - 400 Bad Request:  un filtro con un valor que no existe (?rol=SUPERADMIN).
       - 401 Unauthorized: no se envió un token válido.
       - 403 Forbidden:    X-Rol-Activo indica un rol que el usuario no tiene.
 
@@ -102,6 +119,17 @@ class ListarUsuariosView(generics.ListAPIView):
     """
 
     pagination_class = PaginacionEstandar
+
+    # Filtros exactos (HU-09.1) y búsqueda por texto (HU-09.2).
+    filter_backends = [DjangoFilterBackend, BusquedaDirectorio]
+    filterset_class = UsuarioFilter
+
+    # Campos de la búsqueda para todos los roles.
+    search_fields = ["nombres", "apellidos", "afiliacion"]
+
+    # Campos que se agregan a la búsqueda solo para ADMIN y COMITE: un Autor
+    # no ve los correos, así que tampoco puede buscar por ellos.
+    search_fields_gestion = ["correo"]
 
     def es_gestor(self):
         """Indica si el rol activo de la petición es ADMIN o COMITE."""
@@ -134,3 +162,105 @@ class ListarUsuariosView(generics.ListAPIView):
         if self.es_gestor():
             return UsuarioDirectorioGestionSerializer
         return UsuarioDirectorioSerializer
+
+
+class MiPerfilView(generics.RetrieveUpdateAPIView):
+    """
+    GET y PATCH /api/usuarios/mi-perfil/   (HU-10)
+
+    Permite que cualquier usuario (Administrador, Comité o Autor) consulte y
+    edite sus propios datos personales.
+
+    Siempre trabaja sobre el usuario del token (get_object devuelve
+    request.user): la ruta no recibe un id, así que no hay forma de pedir
+    o modificar el perfil de otra persona.
+
+    Respuestas:
+      - 200 OK:           los datos del perfil (también después de editarlos).
+      - 400 Bad Request:  un campo inválido o que no se puede editar (roles,
+                          activo, correo, clave...), o especialidades sin ser del comité.
+      - 401 Unauthorized: no se envió un token válido.
+      - 405 Method Not Allowed: PUT o DELETE; la edición es parcial (PATCH).
+
+    Permisos: no se declara permission_classes, para usar los de settings.py
+    (IsAuthenticated y el validador global del rol activo).
+    """
+
+    serializer_class = PerfilUsuarioSerializer
+
+    # Solo PATCH (edición parcial): el usuario envía únicamente lo que cambia.
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_object(self):
+        """El perfil es siempre el del usuario que hace la petición."""
+        return self.request.user
+
+
+class GestionUsuarioView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET, PATCH y DELETE /api/usuarios/{id}/   (HU-11 y HU-12)
+
+    Permite que el Administrador o el Comité gestionen la cuenta de
+    cualquier usuario:
+      - GET (HU-11):    consultar sus datos, para cargar el formulario.
+      - PATCH (HU-11):  editar datos personales, roles y especialidades.
+      - DELETE (HU-12): desactivar la cuenta (baja lógica). La fila NO se
+                        borra: queda activo=False con su fecha de desactivación.
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo ADMIN o COMITE (encabezado X-Rol-Activo).
+
+    Respuestas:
+      - 200 OK:           GET y PATCH; los datos de la cuenta.
+      - 204 No Content:   DELETE; la cuenta quedó desactivada.
+      - 400 Bad Request:  PATCH con un campo inválido o no editable; DELETE de
+                          la propia cuenta, de una cuenta ya desactivada o del
+                          último Administrador activo.
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es ADMIN ni COMITE, o el Comité
+                          intenta modificar o desactivar a un Administrador.
+      - 404 Not Found:    no existe un usuario con ese id.
+      - 405 Method Not Allowed: PUT; la edición es parcial (PATCH).
+    """
+
+    serializer_class = GestionUsuarioSerializer
+
+    # prefetch_related carga los roles y las especialidades con la consulta
+    # del usuario, en lugar de una consulta adicional por cada relación.
+    # Incluye a los desactivados: el GET debe poder mostrarlos.
+    queryset = Usuario.objects.prefetch_related("roles", "especialidades")
+
+    # Dos permisos, se revisan en orden:
+    #   1. IsAdminOrComitePermission: rol activo ADMIN o COMITE (antes de buscar al usuario).
+    #   2. ComiteNoModificaAdministradores: con el usuario ya encontrado, el
+    #      Comité no modifica ni desactiva cuentas de Administradores.
+    permission_classes = [IsAdminOrComitePermission, ComiteNoModificaAdministradores]
+
+    # PATCH (edición parcial) y DELETE (baja lógica). Sin PUT.
+    http_method_names = ["get", "patch", "delete", "head", "options"]
+
+    def perform_destroy(self, usuario):
+        """
+        Desactiva la cuenta en lugar de borrarla (HU-12.1).
+
+        DRF llama a este método desde DELETE, después de buscar al usuario y
+        de revisar los permisos. Por defecto ejecutaría usuario.delete(),
+        que borraría la fila; aquí se reemplaza por la baja lógica.
+        Si no lanza un error, DRF responde 204 No Content.
+        """
+        # Paso 1: nadie se desactiva a sí mismo. Evita que un Administrador
+        # o un miembro del Comité se quede por error sin acceso.
+        if usuario.pk == self.request.user.pk:
+            raise BajaNoPermitida("No puede desactivar su propia cuenta.")
+
+        # Paso 2: una cuenta desactivada no se vuelve a desactivar; así se
+        # conserva la fecha original de la baja.
+        if not usuario.activo:
+            raise BajaNoPermitida("La cuenta ya está desactivada.")
+
+        # Paso 3: baja lógica. El modelo verifica que quede un Administrador activo.
+        try:
+            usuario.desactivar()
+        except SinAdministradorActivo as error:
+            raise BajaNoPermitida(error.messages[0])

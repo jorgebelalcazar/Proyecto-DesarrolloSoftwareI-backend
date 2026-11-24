@@ -46,7 +46,11 @@ INSTALLED_APPS = [
     "core",
     "usuarios",  # Dominio de usuarios y acceso
     "rest_framework_simplejwt",  # Tokens JWT; se registra para usar sus mensajes en español
+    # Lista negra de tokens de renovación: el logout invalida el token (HU-05).
+    # Crea dos tablas propias; requiere "python manage.py migrate".
+    "rest_framework_simplejwt.token_blacklist",
     "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
+    "django_filters",  # Filtros por parámetros en la URL, como ?rol=AUTOR (HU-09)
 ]
 
 # Modelo de usuario propio del proyecto.
@@ -198,7 +202,7 @@ RECAPTCHA_URL_VERIFICACION = "https://www.google.com/recaptcha/api/siteverify"
 # Tiempo máximo de espera de la respuesta de Google, en segundos.
 # La verificación suele tardar menos de 500 ms (meta de la HU-03.2); este es el
 # límite a partir del cual se considera que Google no está disponible.
-RECAPTCHA_TIEMPO_LIMITE = 0.5
+RECAPTCHA_TIEMPO_LIMITE = 3
 
 
 # ---------------------------------------------------------------------------

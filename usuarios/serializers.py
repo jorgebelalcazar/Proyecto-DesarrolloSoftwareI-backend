@@ -14,6 +14,9 @@ Contenido:
                              o el Comité (HU-02).
   - UsuarioDirectorioSerializer y UsuarioDirectorioGestionSerializer:
     directorio de usuarios (HU-08).
+  - PerfilUsuarioSerializer: consultar y editar el perfil propio (HU-10).
+  - GestionUsuarioSerializer: consultar y editar la cuenta de otro usuario,
+                              por el Administrador o el Comité (HU-11).
 """
 
 import re
@@ -28,7 +31,7 @@ from autenticacion.excepciones import ServicioCaptchaNoDisponible
 from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
 
-from .models import Especialidad, Rol, Usuario, UsuarioRol
+from .models import Especialidad, Rol, SinAdministradorActivo, Usuario, UsuarioRol
 from .permisos import obtener_rol_activo
 
 # Mensaje reutilizado: en la validación del correo y cuando la base de datos
@@ -38,11 +41,15 @@ MENSAJE_CORREO_DUPLICADO = "Ya existe una cuenta registrada con este correo."
 
 # ===========================================================================
 # VALIDACIONES COMPARTIDAS
-# Las usan el registro de autores (HU-01) y la creación de usuarios (HU-02).
+# Las usan el registro de autores (HU-01), la creación de usuarios (HU-02)
+# y la edición de usuarios (HU-11).
 # ===========================================================================
-def validar_correo_disponible(valor):
+def validar_correo_disponible(valor, excluir=None):
     """
     Normaliza el correo y verifica que no esté registrado.
+
+    "excluir" es el usuario que se está editando (HU-11): su propio correo no
+    cuenta como duplicado, así puede conservarlo o cambiar solo mayúsculas.
 
     Devuelve el correo en minúsculas, que es como se guarda en la base de datos.
     """
@@ -50,7 +57,10 @@ def validar_correo_disponible(valor):
     correo = valor.strip().lower()
 
     # Paso 2: buscar si ya existe. iexact compara sin importar mayúsculas.
-    if Usuario.objects.filter(correo__iexact=correo).exists():
+    otros = Usuario.objects.filter(correo__iexact=correo)
+    if excluir is not None:
+        otros = otros.exclude(pk=excluir.pk)
+    if otros.exists():
         raise serializers.ValidationError(MENSAJE_CORREO_DUPLICADO)
 
     return correo
@@ -379,3 +389,289 @@ class UsuarioDirectorioGestionSerializer(UsuarioDirectorioSerializer):
             "correo", "activo", "fecha_registro", "fecha_desactivacion",
         ]
         read_only_fields = fields
+
+# ===========================================================================
+# HU-10: MI PERFIL (CONSULTAR Y EDITAR LOS DATOS PROPIOS)
+# ===========================================================================
+class PerfilUsuarioSerializer(serializers.ModelSerializer):
+    """
+    Datos del perfil del usuario que inició sesión (HU-10).
+
+    Lectura (GET): sus datos, sus roles y sus especialidades.
+
+    Edición (PATCH), solo estos campos (CAMPOS_EDITABLES):
+      - nombres, apellidos, tipo_documento, numero_documento, afiliacion,
+        pais y telefono;
+      - especialidades (lista de ids), solo si el usuario es del comité.
+
+    Seguridad (HU-10.2, bloqueo de auto-escalación):
+    Se usa una lista PERMITIDA, no una lista prohibida. Cualquier campo que no
+    esté en CAMPOS_EDITABLES, como roles, activo, correo, is_superuser o
+    password, se rechaza con 400. Así, un campo nuevo del modelo queda
+    bloqueado hasta que alguien decida, a propósito, permitir su edición.
+    """
+
+    # Campos que el usuario puede cambiar en su propio perfil.
+    CAMPOS_EDITABLES = {
+        "nombres", "apellidos", "tipo_documento", "numero_documento",
+        "afiliacion", "pais", "telefono", "especialidades",
+    }
+
+    # Roles por código, solo de lectura: nadie se asigna roles desde su perfil.
+    roles = serializers.SlugRelatedField(many=True, read_only=True, slug_field="nombre")
+
+    # Escritura: lista de ids de líneas temáticas, por ejemplo [1, 3].
+    # La lectura se arma en to_representation con el formato {id, nombre}.
+    especialidades = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=LineaTematica.objects.all(), required=False, write_only=True
+    )
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id", "correo", "nombres", "apellidos", "tipo_documento",
+            "numero_documento", "afiliacion", "pais", "telefono",
+            "roles", "especialidades", "fecha_registro",
+        ]
+        read_only_fields = ["id", "correo", "roles", "fecha_registro"]
+
+    def validate(self, datos):
+        """
+        Rechaza los campos que no se pueden editar y valida las especialidades.
+
+          - Campos fuera de CAMPOS_EDITABLES -> 400 en cada uno (HU-10.2).
+          - Especialidades sin el rol COMITE -> 400, la misma regla de la HU-02.
+        """
+        # Paso 1: campos recibidos que no están permitidos.
+        # initial_data es el JSON original, antes de que DRF descarte lo desconocido.
+        no_permitidos = set(self.initial_data) - self.CAMPOS_EDITABLES
+        if no_permitidos:
+            raise serializers.ValidationError({
+                campo: ["Este campo no se puede modificar desde el perfil."]
+                for campo in sorted(no_permitidos)
+            })
+
+        # Paso 2: las especialidades solo aplican a los miembros del comité.
+        # Se revisa que la persona TENGA el rol, sin importar con cuál trabaja ahora.
+        if "especialidades" in datos and not self.instance.tiene_rol(Rol.Nombre.COMITE):
+            raise serializers.ValidationError({
+                "especialidades": [
+                    "Las especialidades solo aplican a los miembros del comité científico."
+                ]
+            })
+
+        return datos
+
+    def to_representation(self, instance):
+        """
+        Agrega las especialidades a la respuesta con el formato {id, nombre},
+        igual que el directorio (HU-08) y el catálogo GET /api/lineas-tematicas/.
+        """
+        datos = super().to_representation(instance)
+        datos["especialidades"] = LineaTematicaSerializer(
+            instance.especialidades.all(), many=True
+        ).data
+        return datos
+
+    def update(self, instance, datos):
+        """
+        Guarda los datos personales y las especialidades en una sola transacción.
+
+        especialidades.set() deja exactamente la lista recibida: crea las nuevas
+        filas en la tabla "especialidad", borra las que sobran y no toca las que
+        se mantienen.
+        """
+        especialidades = datos.pop("especialidades", None)
+
+        with transaction.atomic():
+            instance = super().update(instance, datos)
+            if especialidades is not None:
+                instance.especialidades.set(especialidades)
+
+        return instance
+
+
+# ===========================================================================
+# HU-11: GESTIONAR LA CUENTA DE OTRO USUARIO (ADMINISTRADOR Y COMITÉ)
+# ===========================================================================
+class GestionUsuarioSerializer(serializers.ModelSerializer):
+    """
+    Datos de la cuenta de un usuario, para el Administrador y el Comité (HU-11).
+
+    Lectura (GET): todos sus datos, sus roles, sus especialidades {id, nombre},
+    el estado de la cuenta y sus fechas. Nunca la clave.
+
+    Edición (PATCH), solo estos campos:
+      - nombres, apellidos, tipo_documento, numero_documento, afiliacion,
+        pais y telefono;
+      - roles: lista de códigos, por ejemplo ["AUTOR", "COMITE"];
+      - especialidades: lista de ids de líneas temáticas, solo para el comité;
+      - correo: SOLO el Administrador (ver CAMPOS_SOLO_ADMIN).
+
+    Igual que en el perfil (HU-10), se usa una lista PERMITIDA: cualquier otro
+    campo se rechaza con 400. En particular "activo": desactivar una cuenta
+    también debe guardar su fecha de desactivación, y eso lo hace la HU-12.
+
+    Reglas que valida el servidor:
+      - Debe quedar al menos un rol.
+      - El Comité no puede asignar el rol ADMIN (la misma regla de la HU-02).
+      - Las especialidades solo aplican a quien tendrá el rol COMITE.
+      - Siempre debe quedar un Administrador activo (regla del modelo, HU-11.2).
+      - El correo no puede pertenecer a otra cuenta.
+    La regla "el Comité no modifica Administradores" la revisa la vista, con
+    el permiso ComiteNoModificaAdministradores, antes de llegar aquí.
+    """
+
+    # Campos que el Administrador y el Comité pueden cambiar.
+    CAMPOS_EDITABLES = {
+        "nombres", "apellidos", "tipo_documento", "numero_documento",
+        "afiliacion", "pais", "telefono", "roles", "especialidades",
+    }
+
+    # Campos que solo el Administrador puede cambiar. El correo es el usuario
+    # para iniciar sesión y el destino del PIN de recuperación (HU-06): quien
+    # lo cambia puede quedarse con la cuenta. Por eso se reserva al rol mayor.
+    CAMPOS_SOLO_ADMIN = {"correo"}
+
+    # Roles por su código, igual que en la HU-02. Si llega un código que no
+    # existe en la tabla "rol", DRF responde 400 automáticamente.
+    roles = serializers.SlugRelatedField(
+        many=True, slug_field="nombre", queryset=Rol.objects.all()
+    )
+
+    # Escritura: lista de ids, por ejemplo [1, 3]. La lectura se arma en
+    # to_representation con el formato {id, nombre}.
+    especialidades = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=LineaTematica.objects.all(), required=False, write_only=True
+    )
+
+    class Meta:
+        model = Usuario
+        fields = [
+            "id", "correo", "nombres", "apellidos", "tipo_documento",
+            "numero_documento", "afiliacion", "pais", "telefono",
+            "roles", "especialidades",
+            "activo", "fecha_registro", "fecha_desactivacion",
+        ]
+        read_only_fields = ["id", "activo", "fecha_registro", "fecha_desactivacion"]
+
+        # La unicidad del correo la valida validate_correo, que excluye al
+        # propio usuario y devuelve el mensaje del proyecto.
+        extra_kwargs = {"correo": {"validators": []}}
+
+    def campos_permitidos(self):
+        """Campos que puede cambiar quien hace la petición, según su rol activo."""
+        if obtener_rol_activo(self.context["request"]) == Rol.Nombre.ADMIN:
+            return self.CAMPOS_EDITABLES | self.CAMPOS_SOLO_ADMIN
+        return self.CAMPOS_EDITABLES
+
+    def validate_correo(self, valor):
+        """Correo que no pertenezca a OTRA cuenta."""
+        return validar_correo_disponible(valor, excluir=self.instance)
+
+    def validate_roles(self, roles):
+        """
+        Valida la nueva lista de roles.
+
+          - Debe haber al menos un rol.
+          - Los roles repetidos se ignoran.
+          - El Comité no puede asignar el rol ADMIN. No hace falta revisar si
+            lo QUITA: el Comité no puede modificar cuentas de Administradores.
+        """
+        # Paso 1: al menos un rol.
+        if not roles:
+            raise serializers.ValidationError("Debe asignar al menos un rol.")
+
+        # Paso 2: quitar repetidos conservando el orden.
+        roles = list(dict.fromkeys(roles))
+
+        # Paso 3: nadie otorga un privilegio mayor que el suyo.
+        rol_activo = obtener_rol_activo(self.context["request"])
+        if rol_activo == Rol.Nombre.COMITE and any(rol.nombre == Rol.Nombre.ADMIN for rol in roles):
+            raise serializers.ValidationError(
+                "Un miembro del comité no puede asignar el rol de Administrador."
+            )
+
+        return roles
+
+    def validate(self, datos):
+        """
+        Rechaza los campos que no se pueden editar y valida las especialidades.
+
+          - Campos fuera de la lista permitida -> 400 en cada uno.
+          - Especialidades para alguien que no tendrá el rol COMITE -> 400.
+        """
+        # Paso 1: campos recibidos que este rol no puede cambiar.
+        # initial_data es el JSON original, antes de que DRF descarte lo desconocido.
+        no_permitidos = set(self.initial_data) - self.campos_permitidos()
+        if no_permitidos:
+            raise serializers.ValidationError({
+                campo: ["Este campo no se puede modificar con su rol activo."]
+                for campo in sorted(no_permitidos)
+            })
+
+        # Paso 2: roles que tendrá el usuario: los nuevos si llegaron; si no, los actuales.
+        if "roles" in datos:
+            sera_comite = any(rol.nombre == Rol.Nombre.COMITE for rol in datos["roles"])
+        else:
+            sera_comite = self.instance.tiene_rol(Rol.Nombre.COMITE)
+
+        # Paso 3: las especialidades solo aplican a los miembros del comité.
+        if datos.get("especialidades") and not sera_comite:
+            raise serializers.ValidationError({
+                "especialidades": [
+                    "Las especialidades solo aplican a los miembros del comité científico."
+                ]
+            })
+
+        return datos
+
+    def to_representation(self, instance):
+        """
+        Agrega las especialidades con el formato {id, nombre}, igual que el
+        directorio (HU-08), el perfil (HU-10) y GET /api/lineas-tematicas/.
+        """
+        datos = super().to_representation(instance)
+        datos["especialidades"] = LineaTematicaSerializer(
+            instance.especialidades.all(), many=True
+        ).data
+        return datos
+
+    def update(self, instance, datos):
+        """
+        Guarda los datos, los roles y las especialidades en una sola transacción:
+        si una parte falla, no se guarda nada.
+
+        roles.set() y especialidades.set() dejan exactamente la lista recibida:
+        crean las filas nuevas, borran las que sobran y NO tocan las que se
+        mantienen. Así, si un Administrador conserva su rol ADMIN, esa fila
+        nunca se borra y la regla del último Administrador no se dispara.
+        """
+        # Paso 1: separar lo que no son columnas de la tabla "usuario".
+        roles = datos.pop("roles", None)
+        especialidades = datos.pop("especialidades", None)
+
+        try:
+            with transaction.atomic():
+                # Paso 2: datos personales y correo.
+                instance = super().update(instance, datos)
+
+                # Paso 3: roles. Si se quita el último ADMIN activo, el modelo
+                # lanza SinAdministradorActivo y la transacción se deshace.
+                if roles is not None:
+                    instance.roles.set(roles)
+
+                    # Quien deja de ser del comité no conserva especialidades.
+                    if not any(rol.nombre == Rol.Nombre.COMITE for rol in roles):
+                        especialidades = []
+
+                # Paso 4: especialidades.
+                if especialidades is not None:
+                    instance.especialidades.set(especialidades)
+        except SinAdministradorActivo as error:
+            raise serializers.ValidationError({"roles": error.messages})
+        except IntegrityError:
+            # Caso límite: dos peticiones simultáneas con el mismo correo.
+            raise serializers.ValidationError({"correo": [MENSAJE_CORREO_DUPLICADO]})
+
+        return instance
