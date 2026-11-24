@@ -48,6 +48,27 @@ class CriteriosEvaluacionApiTests(APITestCase):
         self.assertEqual(respuesta.data["results"][0]["peso"], 60)
         self.assertEqual(respuesta.data["count"], 2)
 
+    def test_admin_tambien_puede_consultar_la_rubrica(self):
+        """El rol ADMIN permitido recibe los criterios activos paginados."""
+        # Preparar: crear un usuario con el rol de administración.
+        admin = Usuario.objects.create_user(
+            "admin@ejemplo.com", "ClaveSegura123", nombres="Eva",
+            apellidos="Prueba", afiliacion="Universidad", pais="Colombia",
+        )
+        admin.asignar_rol(Rol.Nombre.ADMIN)
+        self.client.force_authenticate(user=admin)
+
+        # Ejecutar: consultar la rúbrica indicando el rol activo.
+        respuesta = self.client.get(self.url, HTTP_X_ROL_ACTIVO="ADMIN")
+
+        # Verificar: ADMIN recibe los criterios activos en el formato paginado.
+        self.assertEqual(respuesta.status_code, status.HTTP_200_OK)
+        self.assertEqual(respuesta.data["count"], 2)
+        self.assertEqual(
+            [fila["nombre"] for fila in respuesta.data["results"]],
+            ["Aporte", "Metodología"],
+        )
+
     def test_autor_recibe_403(self):
         """El autor no puede consultar la rúbrica de trabajo del comité."""
         self.client.force_authenticate(user=self.autor)
