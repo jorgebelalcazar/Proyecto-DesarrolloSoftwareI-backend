@@ -13,7 +13,10 @@ from .models import Conferencia
 @admin.register(Conferencia)
 class ConferenciaAdmin(admin.ModelAdmin):
     # Columnas de la lista de ediciones.
-    list_display = ("nombre", "fecha_inicio_evento", "fecha_fin_evento", "limite_postulacion")
+    list_display = (
+        "nombre", "fecha_inicio_postulacion", "limite_postulacion",
+        "fecha_inicio_evento", "fecha_fin_evento",
+    )
 
     # Campos en los que busca el buscador.
     search_fields = ("nombre",)

@@ -43,6 +43,7 @@ def fechas_validas(**cambios):
     hoy = timezone.localdate()
     datos = {
         "nombre": "Nexo 2027",
+        "fecha_inicio_postulacion": f"{hoy + timedelta(days=15)}T08:00:00-05:00",
         "limite_postulacion": f"{hoy + timedelta(days=30)}T23:59:00-05:00",
         "limite_revision": f"{hoy + timedelta(days=45)}T23:59:00-05:00",
         "limite_correccion": f"{hoy + timedelta(days=60)}T23:59:00-05:00",
@@ -60,6 +61,7 @@ def crear_conferencia(inicio_en_dias, fin_en_dias, nombre="Nexo"):
     hoy = timezone.localdate()
     return Conferencia.objects.create(
         nombre=nombre,
+        fecha_inicio_postulacion=ahora + timedelta(days=inicio_en_dias - 55),
         limite_postulacion=ahora + timedelta(days=inicio_en_dias - 40),
         limite_revision=ahora + timedelta(days=inicio_en_dias - 30),
         limite_correccion=ahora + timedelta(days=inicio_en_dias - 20),
@@ -146,6 +148,28 @@ class ConferenciaApiTests(APITestCase):
 
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("limite_revision", respuesta.data)
+
+    def test_inicio_de_postulacion_debe_ser_anterior_al_limite(self):
+        """CP-09 rechaza el inicio igual o posterior al cierre de postulaciones."""
+        valido = fechas_validas()
+        respuesta = self.crear_como(
+            self.admin,
+            fechas_validas(fecha_inicio_postulacion=valido["limite_postulacion"]),
+        )
+
+        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("limite_postulacion", respuesta.data)
+
+    def test_fecha_inicio_postulacion_se_guarda_y_se_devuelve(self):
+        """La API expone el inicio que completa la secuencia cronológica."""
+        datos = fechas_validas()
+        respuesta = self.crear_como(self.admin, datos)
+
+        self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(
+            respuesta.data["fecha_inicio_postulacion"],
+            datos["fecha_inicio_postulacion"],
+        )
 
     def test_el_evento_empieza_despues_del_limite_de_version_final(self):
         valido = fechas_validas()

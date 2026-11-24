@@ -18,6 +18,8 @@ from .models import Conferencia
 # Orden de los plazos: cada uno debe ser posterior al anterior.
 # Cada tupla es (campo, campo anterior, mensaje si no es posterior).
 ORDEN_DE_LOS_PLAZOS = [
+    ("limite_postulacion", "fecha_inicio_postulacion",
+     "Debe ser posterior al inicio de postulación."),
     ("limite_revision", "limite_postulacion",
      "Debe ser posterior al límite de postulación."),
     ("limite_correccion", "limite_revision",
@@ -34,6 +36,8 @@ class ConferenciaSerializer(serializers.ModelSerializer):
     Entrada (JSON), todos obligatorios al crear (POST) o reemplazar (PUT):
       - nombre: por ejemplo "Nexo 2027".
       - fecha_inicio_evento y fecha_fin_evento: días, "2027-05-20".
+      - fecha_inicio_postulacion: inicio en hora de Colombia, por ejemplo
+        "2027-02-01T08:00:00-05:00".
       - limite_postulacion, limite_revision, limite_correccion y
         limite_version_final: fecha y hora, "2027-03-15T23:59:00-05:00".
 
@@ -45,10 +49,13 @@ class ConferenciaSerializer(serializers.ModelSerializer):
         model = Conferencia
         fields = [
             "id", "nombre", "fecha_inicio_evento", "fecha_fin_evento",
+            "fecha_inicio_postulacion",
             "limite_postulacion", "limite_revision", "limite_correccion",
             "limite_version_final",
         ]
         read_only_fields = ["id"]
+
+    fecha_inicio_postulacion = serializers.DateTimeField(required=True)
 
     def valor(self, datos, campo):
         """
@@ -70,7 +77,9 @@ class ConferenciaSerializer(serializers.ModelSerializer):
 
         # Paso 1: cada plazo debe ser posterior al anterior.
         for campo, anterior, mensaje in ORDEN_DE_LOS_PLAZOS:
-            if self.valor(datos, campo) <= self.valor(datos, anterior):
+            valor_anterior = self.valor(datos, anterior)
+            # Las ediciones antiguas pueden no tener el inicio hasta actualizarse.
+            if valor_anterior is not None and self.valor(datos, campo) <= valor_anterior:
                 errores[campo] = [mensaje]
 
         # Paso 2: la versión final se entrega antes del día en que empieza el evento.

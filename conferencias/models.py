@@ -7,7 +7,8 @@ etapa del proceso científico (HU-13).
 
 Orden de las etapas (se valida en el serializador y en la base de datos):
 
-    limite_postulacion < limite_revision < limite_correccion < limite_version_final
+    fecha_inicio_postulacion < limite_postulacion < limite_revision
+                              < limite_correccion < limite_version_final
                                                                       |
                                        antes del día de fecha_inicio_evento
                                                                       |
@@ -63,6 +64,11 @@ class Conferencia(models.Model):
     fecha_fin_evento = models.DateField("fecha de fin del evento")
 
     # --- Plazos de cada etapa ----------------------------------------------
+    # Es nullable para conservar ediciones existentes; las nuevas se exigen en API.
+    fecha_inicio_postulacion = models.DateTimeField(
+        "inicio de postulación", null=True, blank=True
+    )
+
     # Hasta cuándo los autores pueden postular y editar artículos (HU-14 y HU-20).
     limite_postulacion = models.DateTimeField("límite de postulación")
 
@@ -91,6 +97,13 @@ class Conferencia(models.Model):
         # evento se hace solo en el serializador, porque compara una fecha con
         # hora contra un día y depende de la zona horaria de Colombia.
         constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(fecha_inicio_postulacion__isnull=True)
+                    | Q(fecha_inicio_postulacion__lt=F("limite_postulacion"))
+                ),
+                name="ck_conferencia_inicio_postulacion_antes_limite",
+            ),
             models.CheckConstraint(
                 condition=Q(limite_postulacion__lt=F("limite_revision")),
                 name="ck_conferencia_postulacion_antes_revision",
