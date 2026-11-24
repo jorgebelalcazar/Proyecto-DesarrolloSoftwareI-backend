@@ -26,4 +26,7 @@ urlpatterns = [
 
     # Autenticación: login, renovación de tokens y sesión (HU-03).
     path("api/auth/", include("autenticacion.urls")),
+
+    # Ediciones de la conferencia y sus plazos (HU-13).
+    path("api/conferencias/", include("conferencias.urls")),
 ]
