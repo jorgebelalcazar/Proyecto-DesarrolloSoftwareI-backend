@@ -10,9 +10,12 @@ Vistas (endpoints) del dominio de artículos.
 
 import logging
 
+from django.db.models import Q
+from rest_framework.permissions import IsAuthenticated
 from django.db import IntegrityError, transaction
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, status
+from rest_framework import generics, permissions
 from rest_framework.filters import SearchFilter
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
@@ -33,6 +36,7 @@ from .permisos import EsAutorResponsable
 from .serializers import (
     ArticuloCatalogoSerializer,
     ArticuloResumenSerializer,
+    ArticuloDetalleSerializer,
     CoautoresArticuloSerializer,
     CoautorSerializer,
     CrearArticuloSerializer,
@@ -341,3 +345,34 @@ def borrar_pdf_huerfano(ruta):
         eliminar_pdf_articulo(ruta)
     except Exception:
         logger.exception("No se pudo borrar el PDF huérfano %s.", ruta)
+    
+    
+class ArticuloDetailAPIView(generics.RetrieveAPIView):
+    """
+    GET /api/articulos/{pk}/   (HU-19)
+
+    Devuelve la ficha técnica completa del artículo (metadatos, firmantes
+    ordenados y URL firmada temporal para ver el PDF en Supabase Storage).
+    """
+
+    serializer_class = ArticuloDetalleSerializer
+    permission_classes = [RequiereRolActivo]
+    permission_classes = [IsAuthenticated, RequiereRolActivo]
+    roles_permitidos = [Rol.Nombre.AUTOR, Rol.Nombre.ADMIN, Rol.Nombre.COMITE]
+    lookup_url_kwarg = "id"
+
+    def get_queryset(self):
+        user = self.request.user
+        rol_activo = (self.request.headers.get("X-Rol-Activo") or "").upper()
+
+        base_qs = Articulo.objects.select_related(
+            "linea_tematica",
+            "autor_responsable",
+        ).prefetch_related("coautores", "versiones")
+
+        if rol_activo in {Rol.Nombre.ADMIN, Rol.Nombre.COMITE}:
+            return base_qs
+
+        return base_qs.filter(
+            Q(autor_responsable=user) | Q(coautores__correo__iexact=user.correo)
+        ).distinct()

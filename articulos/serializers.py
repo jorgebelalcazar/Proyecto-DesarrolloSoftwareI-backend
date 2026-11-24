@@ -17,13 +17,17 @@ from conferencias.models import Conferencia
 from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
 from usuarios.models import Usuario
+from .almacenamiento import crear_url_firmada_pdf
+from .excepciones import AlmacenamientoNoDisponible
+
+TTL_URL_FIRMADA_SEGUNDOS = 900
 
 from .excepciones import PostulacionCerrada
 from .models import (
     Articulo,
     AutorArticulo,
-    HistorialEstado,
     VersionArticulo,
+    HistorialEstado,
     mensaje_plazo_vencido,
 )
 from .validadores_archivo import validar_pdf
@@ -103,6 +107,91 @@ def guardar_coautores(articulo, coautores):
         AutorArticulo(articulo=articulo, **coautor) for coautor in coautores
     )
 
+class ArticuloDetalleSerializer(serializers.ModelSerializer):
+    linea_tematica = serializers.SerializerMethodField()
+    palabras_clave = serializers.SerializerMethodField()
+    firmantes = serializers.SerializerMethodField()
+    tiene_pdf = serializers.SerializerMethodField()
+    pdf_url = serializers.SerializerMethodField()
+    pdf_expira_en = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Articulo
+        fields = [
+            "id",
+            "titulo",
+            "estado",
+            "linea_tematica",
+            "fecha_postulacion",
+            "resumen",
+            "palabras_clave",
+            "firmantes",
+            "tiene_pdf",
+            "pdf_url",
+            "pdf_expira_en",
+        ]
+
+    def get_linea_tematica(self, obj):
+        if not obj.linea_tematica:
+            return None
+        return {
+            "id": obj.linea_tematica.id,
+            "nombre": obj.linea_tematica.nombre,
+        }
+
+    def get_palabras_clave(self, obj):
+        if isinstance(obj.palabras_clave, list):
+            return obj.palabras_clave
+        if not obj.palabras_clave:
+            return []
+        return [kw.strip() for kw in str(obj.palabras_clave).split(",") if kw.strip()]
+
+    def get_firmantes(self, obj):
+        firmantes = []
+
+        # 1. Autor responsable como firmante principal
+        autor = obj.autor_responsable
+        if autor:
+            nombre_autor = f"{getattr(autor, 'nombres', '')} {getattr(autor, 'apellidos', '')}".strip()
+            firmantes.append({
+                "orden": 1,
+                "es_principal": True,
+                "nombre_completo": nombre_autor or autor.correo,
+                "correo": autor.correo,
+                "afiliacion": getattr(autor, "afiliacion", "") or "",
+            })
+
+        # 2. Coautores en su orden de firma (HU-15)
+        for coautor in obj.coautores.all():
+            firmantes.append({
+                "orden": coautor.orden + 1,
+                "es_principal": False,
+                "nombre_completo": coautor.nombre_completo,
+                "correo": coautor.correo,
+                "afiliacion": coautor.afiliacion,
+            })
+
+        return firmantes
+
+    def _obtener_ultima_version(self, obj):
+        # Aprovecha el prefetch_related("versiones") ordenado por ["articulo", "numero"]
+        versiones = list(obj.versiones.all())
+        return versiones[-1] if versiones else None
+
+    def get_tiene_pdf(self, obj) -> bool:
+        return self._obtener_ultima_version(obj) is not None
+
+    def get_pdf_url(self, obj) -> str | None:
+        version = self._obtener_ultima_version(obj)
+        if not version or not version.ruta_pdf:
+            return None
+        try:
+            return crear_url_firmada_pdf(version.ruta_pdf, expira_en=TTL_URL_FIRMADA_SEGUNDOS)
+        except (AlmacenamientoNoDisponible, Exception):
+            return None
+
+    def get_pdf_expira_en(self, obj) -> int | None:
+        return TTL_URL_FIRMADA_SEGUNDOS if self.get_tiene_pdf(obj) else None
 
 class CoautoresArticuloSerializer(serializers.Serializer):
     """
@@ -353,13 +442,6 @@ class SubirVersionInicialSerializer(serializers.Serializer):
 
 
 class VersionArticuloSerializer(serializers.ModelSerializer):
-    """
-    Versión registrada del artículo, para la respuesta (HU-16).
-
-    No incluye "ruta_pdf": el bucket es privado y la ruta no le sirve al
-    front-end. Para ver el PDF, el detalle del artículo (HU-19) entrega un
-    enlace firmado y temporal.
-    """
 
     tipo_nombre = serializers.CharField(source="get_tipo_display", read_only=True)
 
