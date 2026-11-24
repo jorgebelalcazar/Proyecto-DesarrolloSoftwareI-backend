@@ -4,7 +4,12 @@ Rutas de la conferencia. Se montan bajo /api/conferencias/ en config/urls.py.
 
 from django.urls import path
 
-from .views import ConferenciaDetalleView, ConferenciaListCreateView, ConferenciaVigenteView
+from .views import (
+    ConferenciaDetalleView,
+    ConferenciaListCreateView,
+    ConferenciaVigenteView,
+    RubricaConferenciaView,
+)
 
 app_name = "conferencias"
 
@@ -18,4 +23,7 @@ urlpatterns = [
 
     # GET, PUT y PATCH /api/conferencias/{id}/   (HU-13) Una edición.
     path("<int:pk>/", ConferenciaDetalleView.as_view(), name="detalle"),
+
+    # GET y PUT /api/conferencias/{id}/criterios/   (HU-22.2) Rúbrica de evaluación.
+    path("<int:pk>/criterios/", RubricaConferenciaView.as_view(), name="criterios"),
 ]

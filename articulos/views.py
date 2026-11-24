@@ -6,16 +6,14 @@ Vistas (endpoints) del dominio de artículos.
   GET y PUT /api/articulos/{id}/coautores/  -> coautores del artículo (HU-15).
   GET /api/articulos/mis-articulos/         -> artículos del autor (HU-17).
   POST /api/articulos/{id}/versiones/       -> subir el PDF inicial (HU-16).
+  GET /api/articulos/{id}/                  -> ficha completa del artículo (HU-19).
 """
 
 import logging
 
-from django.db.models import Q
-from rest_framework.permissions import IsAuthenticated
 from django.db import IntegrityError, transaction
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, status
-from rest_framework import generics, permissions
 from rest_framework.filters import SearchFilter
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
@@ -32,11 +30,11 @@ from .excepciones import (
 )
 from .filters import ArticuloCatalogoFilter, ArticuloFilter
 from .models import Articulo, VersionArticulo
-from .permisos import EsAutorResponsable
+from .permisos import EsAutorResponsable, PuedeVerArticulo
 from .serializers import (
     ArticuloCatalogoSerializer,
-    ArticuloResumenSerializer,
     ArticuloDetalleSerializer,
+    ArticuloResumenSerializer,
     CoautoresArticuloSerializer,
     CoautorSerializer,
     CrearArticuloSerializer,
@@ -345,34 +343,39 @@ def borrar_pdf_huerfano(ruta):
         eliminar_pdf_articulo(ruta)
     except Exception:
         logger.exception("No se pudo borrar el PDF huérfano %s.", ruta)
-    
-    
-class ArticuloDetailAPIView(generics.RetrieveAPIView):
-    """
-    GET /api/articulos/{pk}/   (HU-19)
 
-    Devuelve la ficha técnica completa del artículo (metadatos, firmantes
-    ordenados y URL firmada temporal para ver el PDF en Supabase Storage).
+
+class ArticuloDetalleView(generics.RetrieveAPIView):
+    """
+    GET /api/articulos/{id}/   (HU-19)
+
+    Ficha completa del artículo: metadatos, autor responsable, coautores en
+    orden de firma y un enlace firmado de 15 minutos para abrir su PDF.
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo AUTOR, COMITE o ADMIN.
+      - Con rol AUTOR, ser el autor responsable del artículo (criterio 3).
+
+    Respuestas:
+      - 200 OK:           la ficha; "pdf" es null si aún no tiene PDF, y
+                          "pdf.url" es null si Supabase no respondió.
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es válido, o un Autor consulta un
+                          artículo ajeno.
+      - 404 Not Found:    no existe un artículo con ese id.
+
+    La HU-20 agregará a esta misma ruta la modificación del artículo.
     """
 
     serializer_class = ArticuloDetalleSerializer
-    permission_classes = [RequiereRolActivo]
-    permission_classes = [IsAuthenticated, RequiereRolActivo]
-    roles_permitidos = [Rol.Nombre.AUTOR, Rol.Nombre.ADMIN, Rol.Nombre.COMITE]
-    lookup_url_kwarg = "id"
 
-    def get_queryset(self):
-        user = self.request.user
-        rol_activo = (self.request.headers.get("X-Rol-Activo") or "").upper()
+    # El artículo, su línea temática y su autor llegan en UNA consulta
+    # (select_related, con JOIN). Los coautores y las versiones suman una
+    # consulta cada uno: 3 en total, sin importar cuántos haya.
+    queryset = Articulo.objects.select_related("linea_tematica", "autor_responsable")
 
-        base_qs = Articulo.objects.select_related(
-            "linea_tematica",
-            "autor_responsable",
-        ).prefetch_related("coautores", "versiones")
-
-        if rol_activo in {Rol.Nombre.ADMIN, Rol.Nombre.COMITE}:
-            return base_qs
-
-        return base_qs.filter(
-            Q(autor_responsable=user) | Q(coautores__correo__iexact=user.correo)
-        ).distinct()
+    # Primero el rol activo (antes de buscar el artículo); luego, con el
+    # artículo encontrado, si ese rol puede verlo.
+    permission_classes = [RequiereRolActivo, PuedeVerArticulo]
+    roles_permitidos = [Rol.Nombre.AUTOR, Rol.Nombre.COMITE, Rol.Nombre.ADMIN]

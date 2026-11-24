@@ -1,5 +1,5 @@
 """
-Conexión con Supabase Storage para los PDF de los artículos (HU-16.1).
+Conexión con Supabase Storage para los PDF de los artículos (HU-16.1 y HU-19.1).
 
 Los PDF se guardan en un bucket PRIVADO: nadie puede abrirlos con una URL
 pública. Django se conecta con la llave "service_role", que tiene permisos
@@ -18,25 +18,9 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-import os
-from supabase import create_client
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
-SUPABASE_BUCKET = os.getenv("SUPABASE_ARTICULOS_BUCKET", "articulos")
-TTL_URL_FIRMADA_SEGUNDOS = int(os.getenv("SUPABASE_SIGNED_URL_TTL", "900"))  # 15 minutos
-
-
-def generar_url_firmada_pdf(ruta_pdf: str | None, expira_en: int = 900) -> str | None:
-    """Genera una URL firmada temporal para ver o descargar un PDF del bucket privado."""
-    if not ruta_pdf:
-        return None
-
-    ruta_limpia = str(ruta_pdf).strip().lstrip("/")
-    respuesta = _bucket().create_signed_url(ruta_limpia, expira_en)
-    if isinstance(respuesta, dict):
-        return respuesta.get("signedURL") or respuesta.get("signedUrl")
-    return None
+# Vigencia de los enlaces firmados para ver un PDF (HU-19): 15 minutos.
+VIGENCIA_URL_FIRMADA_SEGUNDOS = 15 * 60
 
 
 def _bucket():
@@ -87,19 +71,16 @@ def eliminar_pdf_articulo(ruta):
     base de datos: así no quedan archivos huérfanos ocupando espacio.
     """
     _bucket().remove([ruta])
-    
 
-def crear_url_firmada_pdf(ruta_pdf: str | None, expira_en: int = 900) -> str | None:
-    """Genera una URL firmada temporal para ver el PDF en el bucket privado (HU-19)."""
-    if not ruta_pdf:
-        return None
 
-    try:
-        respuesta = _bucket().create_signed_url(ruta_pdf, expira_en)
-    except Exception as error:
-        logger.exception("No se pudo firmar la URL del PDF %s.", ruta_pdf)
-        raise AlmacenamientoNoDisponible() from error
+def crear_url_firmada_pdf(ruta):
+    """
+    Genera un enlace temporal para abrir un PDF del bucket privado (HU-19.1).
 
-    if isinstance(respuesta, dict):
-        return respuesta.get("signedURL") or respuesta.get("signedUrl")
-    return None
+    El enlace lleva un token firmado por Supabase y deja de funcionar a los
+    15 minutos (VIGENCIA_URL_FIRMADA_SEGUNDOS). Así, aunque alguien lo copie
+    y lo comparta, no sirve para siempre; para verlo otra vez, el usuario
+    vuelve a abrir el detalle del artículo y recibe un enlace nuevo.
+    """
+    respuesta = _bucket().create_signed_url(ruta, VIGENCIA_URL_FIRMADA_SEGUNDOS)
+    return respuesta["signedURL"]
