@@ -5,6 +5,8 @@ Contenido:
   - CoautorSerializer y validar_coautores: firmantes del artículo (HU-15).
   - CrearArticuloSerializer: postular un artículo, con sus coautores (HU-14 y HU-15).
   - CoautoresArticuloSerializer: reemplazar la lista de coautores (HU-15).
+  - ArticuloResumenSerializer: una fila de los listados de artículos (HU-17).
+  - ArticuloCatalogoSerializer: una fila del catálogo, con su autor (HU-18).
 """
 
 from django.db import transaction
@@ -13,6 +15,7 @@ from rest_framework import serializers
 from conferencias.models import Conferencia
 from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
+from usuarios.models import Usuario
 
 from .excepciones import PostulacionCerrada
 from .models import Articulo, AutorArticulo, HistorialEstado, mensaje_plazo_vencido
@@ -250,3 +253,68 @@ class CrearArticuloSerializer(serializers.ModelSerializer):
         datos = super().to_representation(instance)
         datos["linea_tematica"] = LineaTematicaSerializer(instance.linea_tematica).data
         return datos
+
+
+# ===========================================================================
+# HU-17: LISTADOS DE ARTÍCULOS
+# ===========================================================================
+class ArticuloResumenSerializer(serializers.ModelSerializer):
+    """
+    Datos resumidos de un artículo, para una fila de tabla (HU-17).
+
+    Es lo que muestra la tabla "Mis artículos": título, línea temática,
+    estado y fecha. No incluye el resumen completo ni los coautores, que se
+    consultan en el detalle (HU-19): así la respuesta es liviana y rápida.
+
+    Formato de salida:
+      {
+        "id": 7, "titulo": "...",
+        "linea_tematica": {"id": 1, "nombre": "Sistemas Inteligentes"},
+        "estado": "POSTULADO", "estado_nombre": "Postulado",
+        "conferencia": 1, "fecha_postulacion": "2027-02-10T15:30:00-05:00"
+      }
+    """
+
+    # Línea temática con id y nombre, el formato de toda la API.
+    linea_tematica = LineaTematicaSerializer(read_only=True)
+
+    # Nombre del estado para mostrarlo; "estado" (el código) sirve para el color del badge.
+    estado_nombre = serializers.CharField(source="get_estado_display", read_only=True)
+
+    class Meta:
+        model = Articulo
+        fields = [
+            "id", "titulo", "linea_tematica", "estado", "estado_nombre",
+            "conferencia", "fecha_postulacion",
+        ]
+        read_only_fields = fields
+
+
+class AutorResponsableSerializer(serializers.ModelSerializer):
+    """
+    Datos del autor responsable en el catálogo (HU-18).
+
+    Solo lo ven el Comité y el Administrador, que ya ven los correos en el
+    directorio de usuarios (HU-08). No incluye documento ni teléfono.
+    """
+
+    class Meta:
+        model = Usuario
+        fields = ["id", "nombres", "apellidos", "correo"]
+        read_only_fields = fields
+
+
+class ArticuloCatalogoSerializer(ArticuloResumenSerializer):
+    """
+    Una fila del catálogo de artículos para el Comité y el Administrador (HU-18).
+
+    Hereda las columnas de "Mis artículos" (HU-17) y agrega el autor
+    responsable, que en el catálogo sí hace falta porque hay artículos de
+    todos los autores.
+    """
+
+    autor_responsable = AutorResponsableSerializer(read_only=True)
+
+    class Meta(ArticuloResumenSerializer.Meta):
+        fields = ArticuloResumenSerializer.Meta.fields + ["autor_responsable"]
+        read_only_fields = fields

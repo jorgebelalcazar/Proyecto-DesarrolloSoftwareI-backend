@@ -2,168 +2,107 @@
 Vistas (endpoints) del dominio de artículos.
 
   POST /api/articulos/                      -> postular un artículo (HU-14).
-  GET y PUT /api/articulos/{id}/coautores/  -> gestionar firmantes (HU-15).
-  POST /api/articulos/{id}/versiones/       -> subir PDF inicial (HU-16).
-  POST /api/articulos/{id}/subir-pdf/      -> alias usado por el front-end (HU-16).
+  GET  /api/articulos/                      -> catálogo con filtros (HU-18).
+  GET y PUT /api/articulos/{id}/coautores/  -> coautores del artículo (HU-15).
+  GET /api/articulos/mis-articulos/         -> artículos del autor (HU-17).
 """
 
-import logging
-
-from django.core.exceptions import ImproperlyConfigured
-from django.db import IntegrityError, transaction
-from django.shortcuts import get_object_or_404
-from rest_framework import generics, status
-from rest_framework.parsers import FormParser, MultiPartParser
+from django.db import transaction
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import generics
+from rest_framework.filters import SearchFilter
 from rest_framework.response import Response
-from rest_framework.views import APIView
 
+from core.paginacion import PaginacionEstandar
 from usuarios.models import Rol
 from usuarios.permisos import RequiereRolActivo
 
 from .excepciones import ArticuloNoEditable
-from .almacenamiento import eliminar_pdf_articulo, subir_pdf_articulo
-from .models import Articulo, VersionArticulo
+from .filters import ArticuloCatalogoFilter, ArticuloFilter
+from .models import Articulo
 from .permisos import EsAutorResponsable
 from .serializers import (
+    ArticuloCatalogoSerializer,
+    ArticuloResumenSerializer,
     CoautoresArticuloSerializer,
     CoautorSerializer,
     CrearArticuloSerializer,
     guardar_coautores,
 )
-from .validadores_archivo import validar_pdf
-
-logger = logging.getLogger(__name__)
 
 
-class CrearArticuloView(generics.CreateAPIView):
+class ArticulosView(generics.ListCreateAPIView):
     """
-    POST /api/articulos/   (HU-14)
+    GET y POST /api/articulos/   (HU-18 y HU-14)
 
-    Postula un artículo: lo crea en estado POSTULADO, a nombre del usuario
-    del token y en la edición vigente de la conferencia, y registra la
-    postulación en el historial de estados.
+    La misma ruta atiende dos operaciones, cada una para un rol distinto:
 
-    Requiere:
-      - Token JWT en el encabezado Authorization.
-      - Rol activo AUTOR (encabezado X-Rol-Activo, o AUTOR como único rol).
+    POST: postular un artículo (HU-14), solo con rol activo AUTOR.
+      Lo crea en estado POSTULADO, a nombre del usuario del token y en la
+      edición vigente de la conferencia, con sus coautores (HU-15) y la
+      primera fila del historial de estados.
 
-    Puede incluir sus coautores (HU-15): se guardan en la misma transacción.
+    GET: catálogo de TODOS los artículos (HU-18), solo con rol activo ADMIN
+      o COMITE, paginado y con filtros combinables (HU-18.2):
+        - ?linea_tematica=1
+        - ?estado=POSTULADO
+        - ?autor=5               id del autor responsable
+        - ?search=redes          texto parcial en título, resumen o palabras clave
+        - ?page=2&page_size=20
 
     Respuestas:
-      - 201 Created:      el artículo creado, con sus coautores.
-      - 400 Bad Request:  un campo inválido (error en el campo), o la
-                          postulación está cerrada (error en "detail").
+      - 200 OK:           GET; página de artículos (count, next, previous, results).
+      - 201 Created:      POST; el artículo creado, con sus coautores.
+      - 400 Bad Request:  POST con un campo inválido o la postulación cerrada;
+                          GET con un filtro de valor inexistente.
       - 401 Unauthorized: no se envió un token válido.
-      - 403 Forbidden:    el rol activo no es AUTOR.
+      - 403 Forbidden:    el rol activo no corresponde a la operación.
     """
 
-    queryset = Articulo.objects.all()
-    serializer_class = CrearArticuloSerializer
+    pagination_class = PaginacionEstandar
+
+    # Rol activo por operación; lo revisa RequiereRolActivo.
     permission_classes = [RequiereRolActivo]
-    roles_permitidos = [Rol.Nombre.AUTOR]
+
+    # Filtros exactos (HU-18.2) y búsqueda parcial por texto, sin importar mayúsculas.
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    filterset_class = ArticuloCatalogoFilter
+    search_fields = ["titulo", "resumen", "palabras_clave"]
+
+    @property
+    def roles_permitidos(self):
+        """
+        Roles que pueden usar el método de esta petición.
+
+        RequiereRolActivo lee este atributo de la vista. Como depende del
+        método, es una propiedad: postular es del Autor; el catálogo, de
+        quienes gestionan la conferencia.
+        """
+        if self.request.method == "POST":
+            return [Rol.Nombre.AUTOR]
+        return [Rol.Nombre.ADMIN, Rol.Nombre.COMITE]
+
+    def get_serializer_class(self):
+        """Datos completos para postular; filas resumidas para el catálogo."""
+        if self.request.method == "POST":
+            return CrearArticuloSerializer
+        return ArticuloCatalogoSerializer
+
+    def get_queryset(self):
+        """
+        Todos los artículos, del más reciente al más antiguo.
+
+        select_related (HU-18.1, criterio 3: respuesta en <= 1.5 s) trae la
+        línea temática y el autor responsable en la MISMA consulta, con dos
+        JOIN. Sin esto, cada fila haría dos consultas más (problema N+1).
+        """
+        return Articulo.objects.select_related("linea_tematica", "autor_responsable").order_by(
+            "-fecha_postulacion", "-id"
+        )
 
     def perform_create(self, serializer):
         """El autor responsable es siempre el usuario del token, nunca uno enviado."""
         serializer.save(autor_responsable=self.request.user)
-
-
-class SubirVersionInicialView(APIView):
-    """
-    POST /api/articulos/{id}/versiones/ (HU-16).
-    También disponible como POST /api/articulos/{id}/subir-pdf/ para
-    conservar el contrato que consume el formulario del front-end.
-
-    Valida el PDF inicial, lo guarda en Supabase Storage y registra su ruta
-    privada en VERSION_ARTICULO como versión 1.
-
-    Requiere token JWT y rol activo AUTOR; solo permite subir al autor responsable.
-
-    Respuestas: 201 al guardar, 400 por archivo inválido o versión duplicada,
-    401 sin token, 403 con otro rol, 404 si el artículo no pertenece al usuario
-    y 503 si Supabase no está disponible.
-    """
-
-    parser_classes = [MultiPartParser, FormParser]
-    permission_classes = [RequiereRolActivo]
-    roles_permitidos = [Rol.Nombre.AUTOR]
-
-    def post(self, request, articulo_id):
-        """Guarda el PDF y registra la versión inicial del artículo."""
-        # Paso 1: comprobar que el artículo pertenece al autor autenticado.
-        articulo = get_object_or_404(
-            Articulo, pk=articulo_id, autor_responsable=request.user
-        )
-        # Paso 2: exigir el archivo y validar formato, firma y tamaño.
-        archivo = request.FILES.get("archivo")
-        if archivo is None:
-            return Response(
-                {"archivo": ["Debe adjuntar un archivo PDF."]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Paso 3: impedir que se reemplace una versión inicial existente.
-        validar_pdf(archivo)
-        if VersionArticulo.objects.filter(articulo=articulo, numero_version=1).exists():
-            return Response(
-                {"version": ["El artículo ya tiene un PDF inicial cargado."]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Paso 4: subir el archivo privado y traducir fallos del proveedor.
-        try:
-            ruta = subir_pdf_articulo(articulo.id, archivo)
-        except ImproperlyConfigured as error:
-            return Response(
-                {"detail": str(error)}, status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-        except Exception:
-            logger.exception("No fue posible subir el PDF del artículo %s", articulo.id)
-            return Response(
-                {"detail": "El almacenamiento de archivos no está disponible."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        # Paso 5: registrar la versión; compensar la subida si falla la BD.
-        try:
-            with transaction.atomic():
-                version = VersionArticulo.objects.create(
-                    articulo=articulo,
-                    numero_version=1,
-                    ruta_archivo=ruta,
-                    cargado_por=request.user,
-                )
-        except IntegrityError:
-            self._eliminar_archivo_si_es_posible(ruta)
-            return Response(
-                {"version": ["El artículo ya tiene un PDF inicial cargado."]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        except Exception:
-            self._eliminar_archivo_si_es_posible(ruta)
-            logger.exception("No fue posible registrar la versión del artículo %s", articulo.id)
-            return Response(
-                {"detail": "No fue posible registrar la versión del archivo."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        # Paso 6: devolver los datos públicos de la versión creada.
-        return Response(
-            {
-                "id": version.id,
-                "articulo": articulo.id,
-                "numero_version": version.numero_version,
-                "fecha_carga": version.fecha_carga,
-            },
-            status=status.HTTP_201_CREATED,
-        )
-
-    @staticmethod
-    def _eliminar_archivo_si_es_posible(ruta):
-        """Evita dejar un objeto huérfano si falla el registro en PostgreSQL."""
-        try:
-            eliminar_pdf_articulo(ruta)
-        except Exception:
-            logger.exception("No fue posible limpiar el PDF huérfano %s", ruta)
 
 
 class CoautoresArticuloView(generics.GenericAPIView):
@@ -234,3 +173,59 @@ class CoautoresArticuloView(generics.GenericAPIView):
             guardar_coautores(articulo, serializer.validated_data["coautores"])
 
         return self.respuesta(articulo)
+
+
+class MisArticulosView(generics.ListAPIView):
+    """
+    GET /api/articulos/mis-articulos/   (HU-17)
+
+    Lista paginada de los artículos que postuló el usuario del token, del más
+    reciente al más antiguo, para hacer seguimiento a sus envíos.
+
+    Privacidad (HU-17, criterio 1): la consulta SIEMPRE se filtra por
+    autor_responsable = usuario del token. No hay ningún parámetro para pedir
+    los artículos de otra persona.
+
+    Filtros (HU-17, criterio 3), combinables entre sí y con la paginación:
+      - ?estado=POSTULADO
+      - ?linea_tematica=1
+      - ?page=2&page_size=20
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo AUTOR.
+
+    Respuestas:
+      - 200 OK:           página de artículos (count, next, previous, results).
+      - 400 Bad Request:  un filtro con un valor que no existe.
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es AUTOR.
+    """
+
+    serializer_class = ArticuloResumenSerializer
+    pagination_class = PaginacionEstandar
+    permission_classes = [RequiereRolActivo]
+    roles_permitidos = [Rol.Nombre.AUTOR]
+
+    # Filtros por estado y línea temática; un valor inválido responde 400.
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = ArticuloFilter
+
+    def get_queryset(self):
+        """
+        Artículos del usuario del token.
+
+        select_related (HU-17, criterio 2: respuesta en <= 1.5 s) trae la
+        línea temática en la MISMA consulta, con un JOIN. Sin esto, la tabla
+        haría una consulta adicional por cada artículo para leer el nombre
+        de su línea (el problema N+1).
+
+        El orden incluye "id" para que la paginación sea estable: dos
+        artículos postulados en el mismo instante no se repiten ni se
+        pierden entre páginas.
+        """
+        return (
+            Articulo.objects.filter(autor_responsable=self.request.user)
+            .select_related("linea_tematica")
+            .order_by("-fecha_postulacion", "-id")
+        )
