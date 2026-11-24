@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     "autenticacion",  # Inicio de sesión y recuperación de clave (HU-03, HU-06, HU-07)
     "django_filters",  # Filtros por parámetros en la URL, como ?rol=AUTOR (HU-09)
+    "conferencias",  # Ediciones de la conferencia y plazos de cada etapa (HU-13)
 ]
 
 # Modelo de usuario propio del proyecto.
