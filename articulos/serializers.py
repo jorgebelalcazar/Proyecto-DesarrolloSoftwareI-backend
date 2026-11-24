@@ -8,7 +8,10 @@ Contenido:
   - ArticuloResumenSerializer: una fila de los listados de artículos (HU-17).
   - ArticuloCatalogoSerializer: una fila del catálogo, con su autor (HU-18).
   - SubirVersionInicialSerializer y VersionArticuloSerializer: PDF inicial (HU-16).
+  - ArticuloDetalleSerializer: ficha completa del artículo con su PDF (HU-19).
 """
+
+import logging
 
 from django.db import transaction
 from rest_framework import serializers
@@ -18,6 +21,7 @@ from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
 from usuarios.models import Usuario
 
+from .almacenamiento import VIGENCIA_URL_FIRMADA_SEGUNDOS, crear_url_firmada_pdf
 from .excepciones import PostulacionCerrada
 from .models import (
     Articulo,
@@ -27,6 +31,8 @@ from .models import (
     mensaje_plazo_vencido,
 )
 from .validadores_archivo import validar_pdf
+
+logger = logging.getLogger(__name__)
 
 # Límites de la HU-14 (criterio 3).
 MAX_CARACTERES_TITULO = 200
@@ -367,3 +373,62 @@ class VersionArticuloSerializer(serializers.ModelSerializer):
         model = VersionArticulo
         fields = ["id", "articulo", "tipo", "tipo_nombre", "numero", "fecha_subida"]
         read_only_fields = fields
+
+
+# ===========================================================================
+# HU-19: DETALLE DEL ARTÍCULO
+# ===========================================================================
+class ArticuloDetalleSerializer(ArticuloCatalogoSerializer):
+    """
+    Ficha completa de un artículo (HU-19.1).
+
+    Hereda la fila del catálogo (HU-18: título, línea temática, estado,
+    conferencia, fecha y autor responsable) y agrega lo que solo se ve en
+    el detalle (HU-19, criterio 1):
+      - resumen y palabras_clave completos;
+      - coautores: los firmantes en su orden de firma (HU-15);
+      - pdf: la versión más reciente del PDF, con un enlace firmado y
+        temporal para abrirlo (criterio 2), o null si aún no tiene PDF.
+
+    Formato de "pdf" (la versión de la HU-16 más su enlace):
+      {"id": 3, "articulo": 7, "tipo": "INICIAL", "tipo_nombre": "Inicial",
+       "numero": 1, "fecha_subida": "...",
+       "url": "https://...?token=...", "vence_en_segundos": 900}
+
+    La ruta del bucket (ruta_pdf) nunca sale en la respuesta: solo el enlace
+    firmado, que vence.
+    """
+
+    coautores = CoautorSerializer(many=True, read_only=True)
+    pdf = serializers.SerializerMethodField()
+
+    class Meta(ArticuloCatalogoSerializer.Meta):
+        fields = ArticuloCatalogoSerializer.Meta.fields + [
+            "resumen", "palabras_clave", "coautores", "pdf",
+        ]
+        read_only_fields = fields
+
+    def get_pdf(self, articulo):
+        """
+        Datos de la versión más reciente del PDF y su enlace firmado.
+
+        Si Supabase no responde, la ficha se entrega igual (el resto de los
+        datos sí está disponible) con "url": null, y el error queda en el log.
+        """
+        # Las versiones se ordenan por número (Meta.ordering de VersionArticulo):
+        # la última es la más reciente (inicial, corrección o final).
+        version = articulo.versiones.last()
+        if version is None:
+            return None
+
+        try:
+            url = crear_url_firmada_pdf(version.ruta_pdf)
+        except Exception:
+            logger.exception("No se pudo firmar el PDF del artículo %s.", articulo.id)
+            url = None
+
+        # Los datos de la versión con el mismo formato de la HU-16, más el enlace.
+        datos = VersionArticuloSerializer(version).data
+        datos["url"] = url
+        datos["vence_en_segundos"] = VIGENCIA_URL_FIRMADA_SEGUNDOS if url else None
+        return datos

@@ -5,6 +5,7 @@ Rutas del dominio de artículos. Se montan bajo /api/articulos/ en config/urls.p
 from django.urls import path
 
 from .views import (
+    ArticuloDetalleView,
     ArticulosView,
     CoautoresArticuloView,
     MisArticulosView,
@@ -20,6 +21,9 @@ urlpatterns = [
 
     # GET /api/articulos/mis-articulos/   (HU-17) Artículos del autor del token.
     path("mis-articulos/", MisArticulosView.as_view(), name="mis-articulos"),
+
+    # GET /api/articulos/{id}/   (HU-19) Ficha completa del artículo.
+    path("<int:pk>/", ArticuloDetalleView.as_view(), name="detalle"),
 
     # GET y PUT /api/articulos/{id}/coautores/   (HU-15) Coautores del artículo.
     path("<int:pk>/coautores/", CoautoresArticuloView.as_view(), name="coautores"),

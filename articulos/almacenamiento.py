@@ -1,5 +1,5 @@
 """
-Conexión con Supabase Storage para los PDF de los artículos (HU-16.1).
+Conexión con Supabase Storage para los PDF de los artículos (HU-16.1 y HU-19.1).
 
 Los PDF se guardan en un bucket PRIVADO: nadie puede abrirlos con una URL
 pública. Django se conecta con la llave "service_role", que tiene permisos
@@ -18,6 +18,9 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+
+# Vigencia de los enlaces firmados para ver un PDF (HU-19): 15 minutos.
+VIGENCIA_URL_FIRMADA_SEGUNDOS = 15 * 60
 
 
 def _bucket():
@@ -68,3 +71,16 @@ def eliminar_pdf_articulo(ruta):
     base de datos: así no quedan archivos huérfanos ocupando espacio.
     """
     _bucket().remove([ruta])
+
+
+def crear_url_firmada_pdf(ruta):
+    """
+    Genera un enlace temporal para abrir un PDF del bucket privado (HU-19.1).
+
+    El enlace lleva un token firmado por Supabase y deja de funcionar a los
+    15 minutos (VIGENCIA_URL_FIRMADA_SEGUNDOS). Así, aunque alguien lo copie
+    y lo comparta, no sirve para siempre; para verlo otra vez, el usuario
+    vuelve a abrir el detalle del artículo y recibe un enlace nuevo.
+    """
+    respuesta = _bucket().create_signed_url(ruta, VIGENCIA_URL_FIRMADA_SEGUNDOS)
+    return respuesta["signedURL"]
