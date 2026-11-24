@@ -202,8 +202,8 @@ class SubirVersionInicialTests(APITestCase):
         subir.assert_not_called()
 
     def test_articulo_deshabilitado_devuelve_400(self, subir, eliminar):
-        self.articulo.estado = Articulo.Estado.DESHABILITADO
-        self.articulo.save()
+        
+        self.articulo.deshabilitar(self.comite, "Fuera del alcance temático del evento.")
 
         respuesta = self.subir(pdf())
 

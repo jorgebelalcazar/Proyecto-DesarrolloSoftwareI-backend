@@ -60,3 +60,15 @@ class AlmacenamientoNoDisponible(APIException):
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     default_detail = "El almacenamiento de archivos no está disponible. Intente más tarde."
     default_code = "almacenamiento_no_disponible"
+
+
+class DeshabilitacionNoPermitida(APIException):
+    """
+    El artículo ya estaba deshabilitado. Responde 400 (HU-21).
+
+    La deshabilitación es permanente: no se repite ni se revierte.
+    """
+
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_detail = "El artículo ya está deshabilitado."
+    default_code = "deshabilitacion_no_permitida"

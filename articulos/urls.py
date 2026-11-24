@@ -8,6 +8,7 @@ from .views import (
     ArticuloDetalleView,
     ArticulosView,
     CoautoresArticuloView,
+    DeshabilitarArticuloView,
     MisArticulosView,
     SubirVersionInicialView,
 )
@@ -22,7 +23,7 @@ urlpatterns = [
     # GET /api/articulos/mis-articulos/   (HU-17) Artículos del autor del token.
     path("mis-articulos/", MisArticulosView.as_view(), name="mis-articulos"),
 
-    # GET /api/articulos/{id}/   (HU-19) Ficha completa del artículo.
+    # GET, PUT y PATCH /api/articulos/{id}/   (HU-19 y HU-20) Ficha y modificación.
     path("<int:pk>/", ArticuloDetalleView.as_view(), name="detalle"),
 
     # GET y PUT /api/articulos/{id}/coautores/   (HU-15) Coautores del artículo.
@@ -30,4 +31,7 @@ urlpatterns = [
 
     # POST /api/articulos/{id}/versiones/   (HU-16) PDF inicial del artículo.
     path("<int:pk>/versiones/", SubirVersionInicialView.as_view(), name="versiones"),
+
+    # PATCH /api/articulos/{id}/deshabilitar/   (HU-21) Retiro por el comité.
+    path("<int:pk>/deshabilitar/", DeshabilitarArticuloView.as_view(), name="deshabilitar"),
 ]

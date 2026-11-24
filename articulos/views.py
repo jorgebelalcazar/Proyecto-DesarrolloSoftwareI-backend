@@ -7,6 +7,8 @@ Vistas (endpoints) del dominio de artículos.
   GET /api/articulos/mis-articulos/         -> artículos del autor (HU-17).
   POST /api/articulos/{id}/versiones/       -> subir el PDF inicial (HU-16).
   GET /api/articulos/{id}/                  -> ficha completa del artículo (HU-19).
+  PUT y PATCH /api/articulos/{id}/          -> modificar el artículo propio (HU-20).
+  PATCH /api/articulos/{id}/deshabilitar/   -> retirar el artículo (HU-21, Comité).
 """
 
 import logging
@@ -26,10 +28,11 @@ from .almacenamiento import eliminar_pdf_articulo, subir_pdf_articulo
 from .excepciones import (
     AlmacenamientoNoDisponible,
     ArticuloNoEditable,
+    DeshabilitacionNoPermitida,
     VersionInicialExistente,
 )
 from .filters import ArticuloCatalogoFilter, ArticuloFilter
-from .models import Articulo, VersionArticulo
+from .models import Articulo, ArticuloYaDeshabilitado, VersionArticulo
 from .permisos import EsAutorResponsable, PuedeVerArticulo
 from .serializers import (
     ArticuloCatalogoSerializer,
@@ -38,6 +41,9 @@ from .serializers import (
     CoautoresArticuloSerializer,
     CoautorSerializer,
     CrearArticuloSerializer,
+    DeshabilitacionSerializer,
+    DeshabilitarArticuloSerializer,
+    EditarArticuloSerializer,
     SubirVersionInicialSerializer,
     VersionArticuloSerializer,
     guardar_coautores,
@@ -345,37 +351,113 @@ def borrar_pdf_huerfano(ruta):
         logger.exception("No se pudo borrar el PDF huérfano %s.", ruta)
 
 
-class ArticuloDetalleView(generics.RetrieveAPIView):
+class ArticuloDetalleView(generics.RetrieveUpdateAPIView):
     """
-    GET /api/articulos/{id}/   (HU-19)
+    GET, PUT y PATCH /api/articulos/{id}/   (HU-19 y HU-20)
 
-    Ficha completa del artículo: metadatos, autor responsable, coautores en
-    orden de firma y un enlace firmado de 15 minutos para abrir su PDF.
+    GET (HU-19): ficha completa del artículo: metadatos, autor responsable,
+      coautores en orden de firma y un enlace firmado de 15 minutos para
+      abrir su PDF. Rol activo AUTOR (solo sus artículos), COMITE o ADMIN.
+
+    PUT y PATCH (HU-20): modificar título, resumen, palabras clave, línea
+      temática y coautores. Solo el autor responsable, con rol activo AUTOR,
+      y solo si el artículo no está DESHABILITADO y el plazo de postulación
+      de su edición sigue abierto.
+
+    Respuestas:
+      - 200 OK:           GET: la ficha; "pdf" es null si aún no tiene PDF, y
+                          "pdf.url" es null si Supabase no respondió.
+                          PUT/PATCH: el artículo modificado, con sus coautores.
+      - 400 Bad Request:  PUT/PATCH con un campo inválido (error en el campo),
+                          o el artículo ya no se puede modificar ("detail").
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no corresponde a la operación, o el
+                          artículo es de otro autor.
+      - 404 Not Found:    no existe un artículo con ese id.
+    """
+
+    # El artículo, su línea temática, su autor y su edición llegan en UNA
+    # consulta (select_related, con JOIN). Los coautores y las versiones
+    # suman una consulta cada uno, sin importar cuántos haya.
+    queryset = Articulo.objects.select_related(
+        "linea_tematica", "autor_responsable", "conferencia"
+    )
+
+    # Primero el rol activo (antes de buscar el artículo); luego, con el
+    # artículo encontrado, si ese rol puede verlo. Con rol AUTOR,
+    # PuedeVerArticulo solo deja pasar al autor responsable: por eso sirve
+    # también para la modificación (HU-20, criterio 1).
+    permission_classes = [RequiereRolActivo, PuedeVerArticulo]
+    http_method_names = ["get", "put", "patch", "head", "options"]
+
+    @property
+    def roles_permitidos(self):
+        """Consultar: Autor, Comité y Admin. Modificar: solo el Autor."""
+        if self.request.method in ("PUT", "PATCH"):
+            return [Rol.Nombre.AUTOR]
+        return [Rol.Nombre.AUTOR, Rol.Nombre.COMITE, Rol.Nombre.ADMIN]
+
+    def get_serializer_class(self):
+        if self.request.method in ("PUT", "PATCH"):
+            return EditarArticuloSerializer
+        return ArticuloDetalleSerializer
+
+    def update(self, request, *args, **kwargs):
+        """
+        Revisa el bloqueo ANTES de validar los datos (HU-20.2): si el
+        artículo está deshabilitado o el plazo venció, no importa qué se
+        envió, la respuesta es 400 con el motivo.
+        """
+        motivo = self.get_object().motivo_no_editable()
+        if motivo:
+            raise ArticuloNoEditable(motivo)
+        return super().update(request, *args, **kwargs)
+
+
+class DeshabilitarArticuloView(generics.GenericAPIView):
+    """
+    PATCH /api/articulos/{id}/deshabilitar/   (HU-21)
+
+    Retira el artículo de la conferencia de forma permanente, con un motivo
+    obligatorio que queda en el artículo y en el historial de estados.
+
+    Entrada (JSON): {"motivo": "..."}   de 10 a 1000 caracteres.
 
     Requiere:
       - Token JWT en el encabezado Authorization.
-      - Rol activo AUTOR, COMITE o ADMIN.
-      - Con rol AUTOR, ser el autor responsable del artículo (criterio 3).
+      - Rol activo COMITE: es una acción exclusiva del comité científico
+        (HU-21, criterio 1). Ni el Administrador ni el Autor pueden hacerlo.
 
     Respuestas:
-      - 200 OK:           la ficha; "pdf" es null si aún no tiene PDF, y
-                          "pdf.url" es null si Supabase no respondió.
+      - 200 OK:           el nuevo estado: {id, estado, estado_nombre, habilitado,
+                          motivo_deshabilitacion, fecha_deshabilitacion}.
+      - 400 Bad Request:  falta el motivo o es muy corto (error en "motivo"),
+                          o el artículo ya estaba deshabilitado ("detail").
       - 401 Unauthorized: no se envió un token válido.
-      - 403 Forbidden:    el rol activo no es válido, o un Autor consulta un
-                          artículo ajeno.
+      - 403 Forbidden:    el rol activo no es COMITE.
       - 404 Not Found:    no existe un artículo con ese id.
 
-    La HU-20 agregará a esta misma ruta la modificación del artículo.
+    No hay operación para rehabilitar: el cambio es irreversible (criterio 2).
     """
 
-    serializer_class = ArticuloDetalleSerializer
+    queryset = Articulo.objects.all()
+    serializer_class = DeshabilitarArticuloSerializer
+    permission_classes = [RequiereRolActivo]
+    roles_permitidos = [Rol.Nombre.COMITE]
+    http_method_names = ["patch", "options"]
 
-    # El artículo, su línea temática y su autor llegan en UNA consulta
-    # (select_related, con JOIN). Los coautores y las versiones suman una
-    # consulta cada uno: 3 en total, sin importar cuántos haya.
-    queryset = Articulo.objects.select_related("linea_tematica", "autor_responsable")
+    def patch(self, request, pk):
+        # Paso 1: buscar el artículo (404) después de revisar el rol (403).
+        articulo = self.get_object()
 
-    # Primero el rol activo (antes de buscar el artículo); luego, con el
-    # artículo encontrado, si ese rol puede verlo.
-    permission_classes = [RequiereRolActivo, PuedeVerArticulo]
-    roles_permitidos = [Rol.Nombre.AUTOR, Rol.Nombre.COMITE, Rol.Nombre.ADMIN]
+        # Paso 2: validar el motivo (400 en "motivo").
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Paso 3: deshabilitar y registrar en el historial, en una transacción.
+        try:
+            articulo.deshabilitar(request.user, serializer.validated_data["motivo"])
+        except ArticuloYaDeshabilitado as error:
+            raise DeshabilitacionNoPermitida(str(error)) from error
+
+        return Response(DeshabilitacionSerializer(articulo).data)

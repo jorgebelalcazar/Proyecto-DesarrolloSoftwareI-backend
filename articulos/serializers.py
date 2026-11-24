@@ -9,6 +9,8 @@ Contenido:
   - ArticuloCatalogoSerializer: una fila del catálogo, con su autor (HU-18).
   - SubirVersionInicialSerializer y VersionArticuloSerializer: PDF inicial (HU-16).
   - ArticuloDetalleSerializer: ficha completa del artículo con su PDF (HU-19).
+  - EditarArticuloSerializer: modificar el artículo propio (HU-20).
+  - DeshabilitarArticuloSerializer y DeshabilitacionSerializer: retiro por el comité (HU-21).
 """
 
 import logging
@@ -432,3 +434,86 @@ class ArticuloDetalleSerializer(ArticuloCatalogoSerializer):
         datos["url"] = url
         datos["vence_en_segundos"] = VIGENCIA_URL_FIRMADA_SEGUNDOS if url else None
         return datos
+
+
+# ===========================================================================
+# HU-20: MODIFICAR UN ARTÍCULO PROPIO
+# ===========================================================================
+class EditarArticuloSerializer(CrearArticuloSerializer):
+    """
+    Datos para modificar un artículo (HU-20.1).
+
+    Hereda TODAS las validaciones de la postulación (HU-14 y HU-15): título
+    de 200 caracteres, resumen de 300 palabras, palabras clave, línea
+    temática y coautores sin correos repetidos. Así una edición nunca deja
+    el artículo en un estado que la postulación no habría aceptado.
+
+    Con PATCH se envían solo los campos que cambian; con PUT, todos.
+    Si llega "coautores", la lista reemplaza a la anterior (como en la HU-15);
+    si no llega, los coautores no cambian.
+
+    El plazo y el estado DESHABILITADO los revisa la vista ANTES de validar
+    (HU-20.2), con Articulo.motivo_no_editable().
+    """
+
+    def validate(self, datos):
+        """
+        No busca la edición vigente como la postulación: el artículo ya
+        pertenece a su edición, y el plazo de ESA edición lo revisa la vista.
+        """
+        return datos
+
+    def update(self, articulo, datos):
+        """Guarda los metadatos y, si llegaron, los coautores, en una transacción."""
+        coautores = datos.pop("coautores", None)
+
+        with transaction.atomic():
+            if datos:
+                for campo, valor in datos.items():
+                    setattr(articulo, campo, valor)
+                articulo.save(update_fields=list(datos))
+
+            if coautores is not None:
+                guardar_coautores(articulo, coautores)
+        return articulo
+
+
+# ===========================================================================
+# HU-21: DESHABILITAR UN ARTÍCULO (COMITÉ)
+# ===========================================================================
+# Longitud mínima del motivo (HU-21.2): evita motivos vacíos como "no" u "ok".
+MIN_CARACTERES_MOTIVO = 10
+
+
+class DeshabilitarArticuloSerializer(serializers.Serializer):
+    """
+    Motivo con el que el comité deshabilita un artículo (HU-21.1).
+
+    Entrada (JSON): {"motivo": "El artículo no corresponde al alcance del evento."}
+    El motivo es obligatorio, de 10 a 1000 caracteres, y queda guardado en
+    el artículo y en el historial de estados.
+    """
+
+    motivo = serializers.CharField(
+        min_length=MIN_CARACTERES_MOTIVO,
+        max_length=1000,
+        error_messages={
+            "required": "Debe indicar el motivo de la deshabilitación.",
+            "blank": "Debe indicar el motivo de la deshabilitación.",
+            "min_length": f"El motivo debe tener al menos {MIN_CARACTERES_MOTIVO} caracteres.",
+        },
+    )
+
+
+class DeshabilitacionSerializer(serializers.ModelSerializer):
+    """Respuesta de la deshabilitación: el nuevo estado del artículo (HU-21)."""
+
+    estado_nombre = serializers.CharField(source="get_estado_display", read_only=True)
+
+    class Meta:
+        model = Articulo
+        fields = [
+            "id", "estado", "estado_nombre", "habilitado",
+            "motivo_deshabilitacion", "fecha_deshabilitacion",
+        ]
+        read_only_fields = fields
