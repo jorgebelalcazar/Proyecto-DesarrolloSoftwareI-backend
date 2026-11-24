@@ -1,5 +1,7 @@
 """
-Vistas (endpoints) del dominio de artículos científicos (HU-14).
+Vistas (endpoints) del dominio de artículos.
+
+  POST /api/articulos/   -> postular un artículo (HU-14).
 """
 
 from rest_framework import generics
@@ -13,21 +15,22 @@ from .serializers import CrearArticuloSerializer
 
 class CrearArticuloView(generics.CreateAPIView):
     """
-    POST /api/articulos/   (HU-14.2)
+    POST /api/articulos/   (HU-14)
 
-    Crea y postula un nuevo artículo científico asociado al autor responsable
-    autenticado, verificando que la fecha límite de postulación no haya vencido
-    y registrando su estado inicial POSTULADO en el historial de estados.
+    Postula un artículo: lo crea en estado POSTULADO, a nombre del usuario
+    del token y en la edición vigente de la conferencia, y registra la
+    postulación en el historial de estados.
 
     Requiere:
-    - Token JWT en el encabezado Authorization.
-    - Encabezado X-Rol-Activo: AUTOR (opcional si AUTOR es su único rol).
+      - Token JWT en el encabezado Authorization.
+      - Rol activo AUTOR (encabezado X-Rol-Activo, o AUTOR como único rol).
 
     Respuestas:
-    - 201 Created:      artículo creado con su línea temática y estado POSTULADO.
-    - 400 Bad Request:  datos inválidos o fecha límite de postulación vencida.
-    - 401 Unauthorized: no se envió un token válido.
-    - 403 Forbidden:    el rol activo no es AUTOR o no pertenece al usuario.
+      - 201 Created:      el artículo creado.
+      - 400 Bad Request:  un campo inválido (error en el campo), o la
+                          postulación está cerrada (error en "detail").
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es AUTOR.
     """
 
     queryset = Articulo.objects.all()
@@ -36,5 +39,5 @@ class CrearArticuloView(generics.CreateAPIView):
     roles_permitidos = [Rol.Nombre.AUTOR]
 
     def perform_create(self, serializer):
-        """Asocia el artículo al usuario autenticado como autor responsable."""
+        """El autor responsable es siempre el usuario del token, nunca uno enviado."""
         serializer.save(autor_responsable=self.request.user)
