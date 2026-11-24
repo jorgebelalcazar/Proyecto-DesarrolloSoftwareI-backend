@@ -4,7 +4,7 @@ Registro del dominio de artículos en el panel de administración.
 
 from django.contrib import admin
 
-from .models import Articulo, HistorialEstado
+from .models import Articulo, AutorArticulo, HistorialEstado
 
 
 class HistorialEstadoInline(admin.TabularInline):
@@ -18,6 +18,13 @@ class HistorialEstadoInline(admin.TabularInline):
     def has_add_permission(self, request, obj=None):
         """El historial lo escribe el sistema, no se agrega a mano."""
         return False
+
+
+class AutorArticuloInline(admin.TabularInline):
+    """Muestra los coautores dentro de cada artículo, en orden de firma."""
+
+    model = AutorArticulo
+    extra = 0
 
 
 @admin.register(Articulo)
@@ -34,5 +41,5 @@ class ArticuloAdmin(admin.ModelAdmin):
     # Campos en los que busca el buscador.
     search_fields = ("titulo", "palabras_clave", "autor_responsable__correo")
 
-    # Historial de estados dentro del artículo.
-    inlines = (HistorialEstadoInline,)
+    # Coautores e historial de estados dentro del artículo.
+    inlines = (AutorArticuloInline, HistorialEstadoInline)
