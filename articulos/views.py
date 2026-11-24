@@ -5,21 +5,30 @@ Vistas (endpoints) del dominio de artículos.
   GET  /api/articulos/                      -> catálogo con filtros (HU-18).
   GET y PUT /api/articulos/{id}/coautores/  -> coautores del artículo (HU-15).
   GET /api/articulos/mis-articulos/         -> artículos del autor (HU-17).
+  POST /api/articulos/{id}/versiones/       -> subir el PDF inicial (HU-16).
 """
 
-from django.db import transaction
+import logging
+
+from django.db import IntegrityError, transaction
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import generics
+from rest_framework import generics, status
 from rest_framework.filters import SearchFilter
+from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
 from core.paginacion import PaginacionEstandar
 from usuarios.models import Rol
 from usuarios.permisos import RequiereRolActivo
 
-from .excepciones import ArticuloNoEditable
+from .almacenamiento import eliminar_pdf_articulo, subir_pdf_articulo
+from .excepciones import (
+    AlmacenamientoNoDisponible,
+    ArticuloNoEditable,
+    VersionInicialExistente,
+)
 from .filters import ArticuloCatalogoFilter, ArticuloFilter
-from .models import Articulo
+from .models import Articulo, VersionArticulo
 from .permisos import EsAutorResponsable
 from .serializers import (
     ArticuloCatalogoSerializer,
@@ -27,8 +36,12 @@ from .serializers import (
     CoautoresArticuloSerializer,
     CoautorSerializer,
     CrearArticuloSerializer,
+    SubirVersionInicialSerializer,
+    VersionArticuloSerializer,
     guardar_coautores,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ArticulosView(generics.ListCreateAPIView):
@@ -229,3 +242,102 @@ class MisArticulosView(generics.ListAPIView):
             .select_related("linea_tematica")
             .order_by("-fecha_postulacion", "-id")
         )
+
+
+class SubirVersionInicialView(generics.GenericAPIView):
+    """
+    POST /api/articulos/{id}/versiones/   (HU-16)
+
+    Sube el PDF inicial del artículo a Supabase Storage y lo registra en
+    VERSION_ARTICULO como la versión 1, de tipo INICIAL.
+
+    Entrada (multipart/form-data): un campo "archivo" con el PDF.
+
+    Requiere:
+      - Token JWT en el encabezado Authorization.
+      - Rol activo AUTOR.
+      - Ser el autor responsable del artículo.
+
+    Respuestas:
+      - 201 Created:      la versión registrada (sin la ruta privada del bucket).
+      - 400 Bad Request:  el archivo no es un PDF válido o pesa más de 10 MB
+                          (error en "archivo"); o el artículo ya tiene su PDF
+                          inicial, está deshabilitado o su plazo venció ("detail").
+      - 401 Unauthorized: no se envió un token válido.
+      - 403 Forbidden:    el rol activo no es AUTOR, o el artículo es de otro autor.
+      - 404 Not Found:    no existe un artículo con ese id.
+      - 503 Service Unavailable: Supabase Storage no respondió.
+    """
+
+    # select_related trae la conferencia en la misma consulta: se usa para
+    # revisar el plazo de postulación.
+    queryset = Articulo.objects.select_related("conferencia")
+    serializer_class = SubirVersionInicialSerializer
+
+    # Los mismos permisos de los coautores (HU-15): rol activo AUTOR y, con el
+    # artículo ya encontrado, que sea su autor responsable.
+    permission_classes = [RequiereRolActivo, EsAutorResponsable]
+    roles_permitidos = [Rol.Nombre.AUTOR]
+
+    # Solo se reciben formularios con archivos (multipart/form-data).
+    parser_classes = [MultiPartParser]
+
+    def post(self, request, pk):
+        # Paso 1: buscar el artículo y revisar los permisos (404 o 403).
+        articulo = self.get_object()
+
+        # Paso 2: el artículo debe seguir siendo editable (400).
+        motivo = articulo.motivo_no_editable()
+        if motivo:
+            raise ArticuloNoEditable(motivo)
+
+        # Paso 3: solo hay un PDF inicial por artículo (400). Se revisa ANTES
+        # de subir, para no gastar espacio en Supabase con un archivo que no
+        # se va a registrar.
+        if articulo.versiones.filter(tipo=VersionArticulo.Tipo.INICIAL).exists():
+            raise VersionInicialExistente()
+
+        # Paso 4: validar el archivo: .pdf, <= 10 MB y firma %PDF (400).
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        archivo = serializer.validated_data["archivo"]
+
+        # Paso 5: subir el PDF al bucket privado (503 si Supabase falla).
+        try:
+            ruta = subir_pdf_articulo(articulo.id, archivo)
+        except Exception as error:
+            logger.exception("No se pudo subir el PDF del artículo %s.", articulo.id)
+            raise AlmacenamientoNoDisponible() from error
+
+        # Paso 6: registrar la versión 1. Si falla, se borra el PDF recién
+        # subido, para que no quede un archivo sin registro en el bucket.
+        try:
+            with transaction.atomic():
+                version = VersionArticulo.objects.create(
+                    articulo=articulo,
+                    tipo=VersionArticulo.Tipo.INICIAL,
+                    numero=1,
+                    ruta_pdf=ruta,
+                )
+        except Exception as error:
+            borrar_pdf_huerfano(ruta)
+            # Dos subidas al mismo tiempo: ambas pasaron el paso 3, pero la
+            # restricción uk_version_articulo_numero solo deja guardar una.
+            if isinstance(error, IntegrityError):
+                raise VersionInicialExistente() from error
+            raise
+
+        return Response(VersionArticuloSerializer(version).data, status=status.HTTP_201_CREATED)
+
+
+def borrar_pdf_huerfano(ruta):
+    """
+    Intenta borrar del bucket un PDF que no quedó registrado (HU-16).
+
+    Si tampoco se puede borrar, solo se deja en el log: el error que importa
+    es el original, y es el que se le responde al usuario.
+    """
+    try:
+        eliminar_pdf_articulo(ruta)
+    except Exception:
+        logger.exception("No se pudo borrar el PDF huérfano %s.", ruta)

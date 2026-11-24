@@ -206,6 +206,11 @@ RECAPTCHA_URL_VERIFICACION = "https://www.google.com/recaptcha/api/siteverify"
 # límite a partir del cual se considera que Google no está disponible.
 RECAPTCHA_TIEMPO_LIMITE = 3
 
+# Supabase Storage guarda los PDF privados de los artículos (HU-16).
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "articulos")
+
 
 # ---------------------------------------------------------------------------
 # Correo electrónico (HU-06.2)
