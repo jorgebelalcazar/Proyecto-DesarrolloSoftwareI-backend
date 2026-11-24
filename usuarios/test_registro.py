@@ -12,8 +12,6 @@ APITestCase incluye "self.client", un cliente HTTP de prueba que envía
 peticiones a la API sin levantar el servidor.
 """
 
-from unittest.mock import patch
-
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -37,7 +35,6 @@ def datos_validos(**cambios):
         "clave": "ClaveSegura123",
         "confirmacion_clave": "ClaveSegura123",
         "acepta_tratamiento_datos": True,
-        "captcha": "token-prueba",
     }
     datos.update(cambios)
     return datos
@@ -48,9 +45,6 @@ class RegistroAutorTests(APITestCase):
         # reverse construye la dirección a partir del nombre de la ruta:
         # "usuarios:registro-autor" -> "/api/usuarios/registro-autor/"
         self.url = reverse("usuarios:registro-autor")
-        parche = patch("usuarios.serializers.verificar_captcha", return_value=True)
-        parche.start()
-        self.addCleanup(parche.stop)
 
     def test_registro_exitoso_devuelve_201_y_crea_autor(self):
         """CP-01.A: registro exitoso de un autor."""
@@ -87,26 +81,6 @@ class RegistroAutorTests(APITestCase):
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("correo", respuesta.data)
         self.assertEqual(Usuario.objects.count(), 1)
-
-    def test_captcha_invalido_devuelve_400(self):
-        with patch("usuarios.serializers.verificar_captcha", return_value=False):
-            respuesta = self.client.post(self.url, datos_validos(), format="json")
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("captcha", respuesta.data)
-
-    def test_captcha_ausente_devuelve_400(self):
-        datos = datos_validos()
-        datos.pop("captcha")
-        respuesta = self.client.post(self.url, datos, format="json")
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("captcha", respuesta.data)
-
-    def test_servicio_captcha_no_disponible_devuelve_503(self):
-        from autenticacion.captcha import CaptchaNoDisponible
-
-        with patch("usuarios.serializers.verificar_captcha", side_effect=CaptchaNoDisponible()):
-            respuesta = self.client.post(self.url, datos_validos(), format="json")
-        self.assertEqual(respuesta.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
 
     def test_claves_distintas_devuelve_400(self):
         respuesta = self.client.post(

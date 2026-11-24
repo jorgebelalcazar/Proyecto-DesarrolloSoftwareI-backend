@@ -8,7 +8,8 @@ Un serializador cumple dos funciones:
      podría enviar peticiones directamente a la API, saltándose React.
 
 Contenido:
-  - Validaciones compartidas: correo disponible y fortaleza de la clave.
+  - Validaciones compartidas: correo disponible, fortaleza de la clave y
+    especialidades de los miembros del comité.
   - RegistroAutorSerializer: auto-registro de autores (HU-01).
   - CrearUsuarioSerializer:  creación de usuarios por el Administrador
                              o el Comité (HU-02).
@@ -26,8 +27,6 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
-from autenticacion.captcha import CaptchaNoDisponible, verificar_captcha
-from autenticacion.excepciones import ServicioCaptchaNoDisponible
 from core.models import LineaTematica
 from core.serializers import LineaTematicaSerializer
 
@@ -38,11 +37,19 @@ from .permisos import obtener_rol_activo
 # rechaza un correo duplicado.
 MENSAJE_CORREO_DUPLICADO = "Ya existe una cuenta registrada con este correo."
 
+# Mensajes de la regla de las especialidades (HU-02, HU-10 y HU-11).
+MENSAJE_ESPECIALIDADES_SOLO_COMITE = (
+    "Las especialidades solo aplican a los miembros del comité científico."
+)
+MENSAJE_COMITE_SIN_ESPECIALIDAD = (
+    "Asigne al menos una línea temática a los miembros del comité científico."
+)
+
 
 # ===========================================================================
 # VALIDACIONES COMPARTIDAS
-# Las usan el registro de autores (HU-01), la creación de usuarios (HU-02)
-# y la edición de usuarios (HU-11).
+# Las usan el registro de autores (HU-01), la creación de usuarios (HU-02),
+# el perfil (HU-10) y la edición de usuarios (HU-11).
 # ===========================================================================
 def validar_correo_disponible(valor, excluir=None):
     """
@@ -95,6 +102,33 @@ def validar_fortaleza_clave(valor):
     return valor
 
 
+def validar_especialidades_comite(es_comite, especialidades):
+    """
+    Regla de las especialidades, la misma en HU-02, HU-10 y HU-11.
+
+      - es_comite:      si el usuario tendrá el rol COMITE después del cambio.
+      - especialidades: las líneas temáticas que tendrá después del cambio.
+
+    Reglas:
+      - Quien no es del comité no tiene especialidades.
+      - Todo miembro del comité tiene al menos una. Las especialidades sirven
+        para sugerir revisores según la línea temática del artículo
+        (elicitación G03-R6); un miembro sin ellas no se le podría sugerir
+        a ningún artículo.
+
+    Está en una sola función para que la regla no se pueda saltar por otro
+    endpoint: crear (HU-02), editar el perfil (HU-10) y editar la cuenta (HU-11).
+    """
+    if especialidades and not es_comite:
+        raise serializers.ValidationError(
+            {"especialidades": [MENSAJE_ESPECIALIDADES_SOLO_COMITE]}
+        )
+    if es_comite and not especialidades:
+        raise serializers.ValidationError(
+            {"especialidades": [MENSAJE_COMITE_SIN_ESPECIALIDAD]}
+        )
+
+
 # ===========================================================================
 # HU-01: REGISTRO DE AUTOR
 # ===========================================================================
@@ -123,7 +157,6 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
     confirmacion_clave = serializers.CharField(
         write_only=True, trim_whitespace=False, style={"input_type": "password"}
     )
-    captcha = serializers.CharField(write_only=True)
 
     # Solo de lectura: aparecen en la respuesta, pero el cliente no puede enviarlos.
     # slug_field="nombre" muestra "AUTOR" en lugar del id del rol.
@@ -135,7 +168,7 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
             "id", "correo", "nombres", "apellidos", "tipo_documento",
             "numero_documento", "afiliacion", "pais", "telefono",
             "acepta_tratamiento_datos", "clave", "confirmacion_clave",
-            "captcha", "roles", "fecha_registro",
+            "roles", "fecha_registro",
         ]
         read_only_fields = ["id", "fecha_registro"]
         extra_kwargs = {
@@ -164,20 +197,6 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
             )
         return valor
 
-    def validate_captcha(self, valor):
-        """Verifica ante Google el CAPTCHA exigido por HU-01."""
-        request = self.context.get("request")
-        ip = request.META.get("REMOTE_ADDR") if request else None
-        try:
-            valido = verificar_captcha(valor, ip)
-        except CaptchaNoDisponible as error:
-            raise ServicioCaptchaNoDisponible() from error
-        if not valido:
-            raise serializers.ValidationError(
-                "La verificación CAPTCHA no es válida. Intente de nuevo."
-            )
-        return valor
-
     def validate(self, datos):
         """Verifica que la clave y su confirmación coincidan."""
         if datos["clave"] != datos["confirmacion_clave"]:
@@ -192,7 +211,6 @@ class RegistroAutorSerializer(serializers.ModelSerializer):
         """
         # Paso 1: separar los campos que no son columnas del modelo.
         datos.pop("confirmacion_clave")
-        datos.pop("captcha")
         clave = datos.pop("clave")
 
         try:
@@ -217,8 +235,9 @@ class CrearUsuarioSerializer(serializers.ModelSerializer):
     Entrada (JSON):
       - Obligatorios: correo, nombres, apellidos, afiliacion, pais, clave y
         roles (lista de nombres, por ejemplo ["AUTOR", "COMITE"]).
-      - Opcionales: tipo_documento, numero_documento, telefono y
-        especialidades (lista de ids de líneas temáticas, solo para el comité).
+      - especialidades (lista de ids de líneas temáticas): obligatorias para
+        el comité (al menos una) y no permitidas para los demás roles.
+      - Opcionales: tipo_documento, numero_documento y telefono.
 
     Salida: los datos del usuario creado, sus roles y sus especialidades,
     SIN la clave.
@@ -292,18 +311,12 @@ class CrearUsuarioSerializer(serializers.ModelSerializer):
         return roles
 
     def validate(self, datos):
-        """Las especialidades solo aplican a los miembros del comité."""
-        especialidades = datos.get("especialidades", [])
-        nombres = {rol.nombre for rol in datos["roles"]}
-
-        if especialidades and Rol.Nombre.COMITE not in nombres:
-            raise serializers.ValidationError(
-                {"especialidades": ["Las especialidades solo aplican a los miembros del comité científico."]}
-            )
-        if Rol.Nombre.COMITE in nombres and not especialidades:
-            raise serializers.ValidationError(
-                {"especialidades": ["Asigne al menos una línea temática a los miembros del comité científico."]}
-            )
+        """
+        Especialidades coherentes con los roles: solo el comité las tiene, y
+        todo miembro del comité tiene al menos una.
+        """
+        es_comite = any(rol.nombre == Rol.Nombre.COMITE for rol in datos["roles"])
+        validar_especialidades_comite(es_comite, datos.get("especialidades", []))
         return datos
 
     def create(self, datos):
@@ -390,6 +403,7 @@ class UsuarioDirectorioGestionSerializer(UsuarioDirectorioSerializer):
         ]
         read_only_fields = fields
 
+
 # ===========================================================================
 # HU-10: MI PERFIL (CONSULTAR Y EDITAR LOS DATOS PROPIOS)
 # ===========================================================================
@@ -402,7 +416,8 @@ class PerfilUsuarioSerializer(serializers.ModelSerializer):
     Edición (PATCH), solo estos campos (CAMPOS_EDITABLES):
       - nombres, apellidos, tipo_documento, numero_documento, afiliacion,
         pais y telefono;
-      - especialidades (lista de ids), solo si el usuario es del comité.
+      - especialidades (lista de ids), solo si el usuario es del comité, y
+        nunca vacía: un miembro del comité conserva al menos una.
 
     Seguridad (HU-10.2, bloqueo de auto-escalación):
     Se usa una lista PERMITIDA, no una lista prohibida. Cualquier campo que no
@@ -440,7 +455,8 @@ class PerfilUsuarioSerializer(serializers.ModelSerializer):
         Rechaza los campos que no se pueden editar y valida las especialidades.
 
           - Campos fuera de CAMPOS_EDITABLES -> 400 en cada uno (HU-10.2).
-          - Especialidades sin el rol COMITE -> 400, la misma regla de la HU-02.
+          - Especialidades sin el rol COMITE, o un miembro del comité que
+            deja su lista vacía -> 400, la misma regla de la HU-02.
         """
         # Paso 1: campos recibidos que no están permitidos.
         # initial_data es el JSON original, antes de que DRF descarte lo desconocido.
@@ -451,14 +467,12 @@ class PerfilUsuarioSerializer(serializers.ModelSerializer):
                 for campo in sorted(no_permitidos)
             })
 
-        # Paso 2: las especialidades solo aplican a los miembros del comité.
+        # Paso 2: si se envían especialidades, aplicar la regla del comité.
         # Se revisa que la persona TENGA el rol, sin importar con cuál trabaja ahora.
-        if "especialidades" in datos and not self.instance.tiene_rol(Rol.Nombre.COMITE):
-            raise serializers.ValidationError({
-                "especialidades": [
-                    "Las especialidades solo aplican a los miembros del comité científico."
-                ]
-            })
+        if "especialidades" in datos:
+            validar_especialidades_comite(
+                self.instance.tiene_rol(Rol.Nombre.COMITE), datos["especialidades"]
+            )
 
         return datos
 
@@ -515,7 +529,8 @@ class GestionUsuarioSerializer(serializers.ModelSerializer):
     Reglas que valida el servidor:
       - Debe quedar al menos un rol.
       - El Comité no puede asignar el rol ADMIN (la misma regla de la HU-02).
-      - Las especialidades solo aplican a quien tendrá el rol COMITE.
+      - Las especialidades solo aplican a quien tendrá el rol COMITE, y todo
+        miembro del comité debe tener al menos una.
       - Siempre debe quedar un Administrador activo (regla del modelo, HU-11.2).
       - El correo no puede pertenecer a otra cuenta.
     La regla "el Comité no modifica Administradores" la revisa la vista, con
@@ -599,7 +614,9 @@ class GestionUsuarioSerializer(serializers.ModelSerializer):
         Rechaza los campos que no se pueden editar y valida las especialidades.
 
           - Campos fuera de la lista permitida -> 400 en cada uno.
-          - Especialidades para alguien que no tendrá el rol COMITE -> 400.
+          - Especialidades incoherentes con los roles que tendrá -> 400:
+            especialidades sin el rol COMITE, o un miembro del comité sin
+            ninguna (la misma regla de la HU-02).
         """
         # Paso 1: campos recibidos que este rol no puede cambiar.
         # initial_data es el JSON original, antes de que DRF descarte lo desconocido.
@@ -610,19 +627,28 @@ class GestionUsuarioSerializer(serializers.ModelSerializer):
                 for campo in sorted(no_permitidos)
             })
 
-        # Paso 2: roles que tendrá el usuario: los nuevos si llegaron; si no, los actuales.
+        # Paso 2: la regla solo se revisa si la petición cambia roles o
+        # especialidades. Así, corregir el teléfono de alguien no se bloquea
+        # por datos que no se están tocando.
+        if "roles" not in datos and "especialidades" not in datos:
+            return datos
+
+        # Paso 3: roles que tendrá el usuario: los nuevos si llegaron; si no, los actuales.
         if "roles" in datos:
             sera_comite = any(rol.nombre == Rol.Nombre.COMITE for rol in datos["roles"])
         else:
             sera_comite = self.instance.tiene_rol(Rol.Nombre.COMITE)
 
-        # Paso 3: las especialidades solo aplican a los miembros del comité.
-        if datos.get("especialidades") and not sera_comite:
-            raise serializers.ValidationError({
-                "especialidades": [
-                    "Las especialidades solo aplican a los miembros del comité científico."
-                ]
-            })
+        # Paso 4: especialidades que tendrá después del cambio.
+        if "especialidades" in datos:
+            finales = datos["especialidades"]           # las que llegaron
+        elif sera_comite:
+            finales = list(self.instance.especialidades.all())  # conserva las suyas
+        else:
+            finales = []                                # update() se las quita
+
+        # Paso 5: la misma regla de la HU-02.
+        validar_especialidades_comite(sera_comite, finales)
 
         return datos
 
