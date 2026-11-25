@@ -294,7 +294,7 @@ class VersionArticulo(models.Model):
     Archivo PDF de una versión del artículo (tabla "version_articulo").
 
     Un artículo entrega varias versiones durante la conferencia:
-      - INICIAL:    el manuscrito de la postulación (HU-16). Siempre es la número 1.
+      - INICIAL:    el manuscrito de la postulación y sus reemplazos (HU-16 y HU-23).
       - CORRECCION: la versión corregida después de la revisión.
       - FINAL:      la versión final para la publicación.
 
@@ -332,21 +332,15 @@ class VersionArticulo(models.Model):
         verbose_name_plural = "versiones del artículo"
         ordering = ["articulo", "numero"]
 
-        # Reglas también en la base de datos (HU-16, criterio 2):
-        #   - un artículo no repite un número de versión;
-        #   - los números empiezan en 1;
-        #   - la versión INICIAL es siempre la número 1. Junto con la primera
-        #     regla, esto impide que un artículo tenga dos versiones iniciales.
+        # Reglas también en la base de datos: cada número es único por artículo
+        # y las versiones comienzan en 1. HU-23 conserva versiones iniciales
+        # anteriores y registra cada reemplazo con el número siguiente.
         constraints = [
             models.UniqueConstraint(
                 fields=["articulo", "numero"], name="uk_version_articulo_numero"
             ),
             models.CheckConstraint(
                 condition=Q(numero__gte=1), name="ck_version_articulo_numero_positivo"
-            ),
-            models.CheckConstraint(
-                condition=~Q(tipo="INICIAL") | Q(numero=1),
-                name="ck_version_articulo_inicial_es_la_uno",
             ),
         ]
 
