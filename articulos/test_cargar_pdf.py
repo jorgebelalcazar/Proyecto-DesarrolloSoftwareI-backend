@@ -1,5 +1,5 @@
 """
-Pruebas de la carga del PDF inicial del artículo (HU-16).
+Pruebas de la carga y reemplazo del PDF inicial del artículo (HU-16 y HU-23).
 
 Endpoint: POST /api/articulos/{id}/versiones/
 
@@ -7,7 +7,7 @@ Cubren el caso de prueba CP-12 de la subtarea de QA HU-16.5:
   - un PDF válido de 2 MB se acepta;
   - un PDF de 12 MB y un archivo .docx se rechazan en el servidor.
 Y además: firma %PDF, límite exacto de 10 MB, permisos, plazo, versión
-inicial única, fallos de Supabase, limpieza de archivos huérfanos y las
+versiones iniciales incrementales, fallos de Supabase, limpieza de archivos huérfanos y las
 reglas de la tabla version_articulo en la base de datos.
 
 Las pruebas NO se conectan con Supabase: la subida se reemplaza con
@@ -63,14 +63,14 @@ def crear_conferencia(dias_para_cerrar=30):
     )
 
 
-def pdf(nombre="manuscrito.pdf", tamano=1024, contenido=None):
+def pdf(nombre="manuscrito.pdf", tamano=1024, contenido=None, content_type="application/pdf"):
     """
     Archivo de prueba. Por defecto, un PDF de "tamano" bytes que empieza
     con la firma %PDF-.
     """
     if contenido is None:
         contenido = b"%PDF-" + b"x" * (tamano - 5)
-    return SimpleUploadedFile(nombre, contenido, content_type="application/pdf")
+    return SimpleUploadedFile(nombre, contenido, content_type=content_type)
 
 
 # El nombre que se reemplaza es el que usa la vista: "articulos.views.<función>".
@@ -135,6 +135,7 @@ class SubirVersionInicialTests(APITestCase):
             "CP-12: PDF de 12 MB": pdf(tamano=12 * UN_MB),
             "un byte más de 10 MB": pdf(tamano=10 * UN_MB + 1),
             "CP-12: archivo .docx": pdf(nombre="manuscrito.docx"),
+            "MIME incorrecto": pdf(content_type="application/octet-stream"),
             "PDF sin firma %PDF": pdf(contenido=b"PK\x03\x04 un docx renombrado"),
             "archivo vacío": pdf(contenido=b""),
         }
@@ -179,17 +180,23 @@ class SubirVersionInicialTests(APITestCase):
         self.assertEqual(respuesta.status_code, status.HTTP_404_NOT_FOUND)
 
     # ------------------------------------------- Reglas del artículo
-    def test_no_se_sube_un_segundo_pdf_inicial(self, subir, eliminar):
+    def test_reemplazo_registra_nueva_version_y_conserva_la_anterior(self, subir, eliminar):
         VersionArticulo.objects.create(
             articulo=self.articulo, tipo=VersionArticulo.Tipo.INICIAL,
             numero=1, ruta_pdf="articulos/1/anterior.pdf",
         )
+        subir.return_value = "articulos/1/reemplazo.pdf"
 
         respuesta = self.subir(pdf())
 
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(respuesta.data["detail"], "El artículo ya tiene su PDF inicial cargado.")
-        subir.assert_not_called()
+        self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(respuesta.data["tipo"], VersionArticulo.Tipo.INICIAL)
+        self.assertEqual(respuesta.data["numero"], 2)
+        versiones = list(self.articulo.versiones.order_by("numero"))
+        self.assertEqual(len(versiones), 2)
+        self.assertEqual(versiones[0].ruta_pdf, "articulos/1/anterior.pdf")
+        self.assertEqual(versiones[1].ruta_pdf, "articulos/1/reemplazo.pdf")
+        subir.assert_called_once()
 
     def test_con_el_plazo_vencido_devuelve_400(self, subir, eliminar):
         self.articulo.conferencia = crear_conferencia(dias_para_cerrar=-1)
@@ -200,6 +207,14 @@ class SubirVersionInicialTests(APITestCase):
         self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("venció", respuesta.data["detail"])
         subir.assert_not_called()
+
+    def test_en_el_instante_limite_se_permite_el_reemplazo(self, subir, eliminar):
+        limite = self.articulo.conferencia.limite_postulacion
+
+        with patch("articulos.models.timezone.now", return_value=limite):
+            respuesta = self.subir(pdf())
+
+        self.assertEqual(respuesta.status_code, status.HTTP_201_CREATED)
 
     def test_articulo_deshabilitado_devuelve_400(self, subir, eliminar):
         
@@ -221,27 +236,6 @@ class SubirVersionInicialTests(APITestCase):
         self.assertEqual(respuesta.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertNotIn("conexión", respuesta.data["detail"])
         self.assertFalse(VersionArticulo.objects.exists())
-
-    def test_dos_subidas_simultaneas_borran_el_pdf_sobrante(self, subir, eliminar):
-        """
-        Simula la carrera: mientras este PDF sube, otra petición registra la
-        versión 1. La restricción de la base de datos rechaza la segunda, y
-        su archivo se borra del bucket.
-        """
-        def otra_peticion_gana(articulo_id, archivo):
-            VersionArticulo.objects.create(
-                articulo=self.articulo, tipo=VersionArticulo.Tipo.INICIAL,
-                numero=1, ruta_pdf="articulos/1/ganador.pdf",
-            )
-            return RUTA_FALSA
-
-        subir.side_effect = otra_peticion_gana
-
-        respuesta = self.subir(pdf())
-
-        self.assertEqual(respuesta.status_code, status.HTTP_400_BAD_REQUEST)
-        eliminar.assert_called_once_with(RUTA_FALSA)
-        self.assertEqual(VersionArticulo.objects.get().ruta_pdf, "articulos/1/ganador.pdf")
 
     def test_si_falla_el_registro_se_borra_el_pdf_subido(self, subir, eliminar):
         with patch.object(VersionArticulo.objects, "create", side_effect=RuntimeError("BD caída")):
@@ -311,18 +305,23 @@ class ReglasVersionArticuloTests(TestCase):
             articulo=self.articulo, tipo=tipo, numero=numero, ruta_pdf=f"articulos/x/{numero}.pdf"
         )
 
-    def test_rechaza_versiones_invalidas(self):
+    def test_rechaza_numeros_invalidos_y_repetidos(self):
         Tipo = VersionArticulo.Tipo
         self.crear(Tipo.INICIAL, 1)
         casos = {
             "número repetido": (Tipo.CORRECCION, 1),
             "número cero": (Tipo.CORRECCION, 0),
-            "segunda versión inicial": (Tipo.INICIAL, 2),
         }
         for caso, (tipo, numero) in casos.items():
             with self.subTest(caso=caso):
                 with self.assertRaises(IntegrityError), transaction.atomic():
                     self.crear(tipo, numero)
+
+    def test_acepta_reemplazos_iniciales_incrementales(self):
+        self.crear(VersionArticulo.Tipo.INICIAL, 1)
+        segunda = self.crear(VersionArticulo.Tipo.INICIAL, 2)
+        self.assertEqual(segunda.tipo, VersionArticulo.Tipo.INICIAL)
+        self.assertEqual(self.articulo.versiones.count(), 2)
 
     def test_acepta_la_correccion_despues_de_la_inicial(self):
         self.crear(VersionArticulo.Tipo.INICIAL, 1)

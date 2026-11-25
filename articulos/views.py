@@ -14,8 +14,9 @@ Vistas (endpoints) del dominio de artículos.
 import logging
 
 from django.db import IntegrityError, transaction
+from django.db.models import Max
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import generics, status
+from rest_framework import generics, serializers, status
 from rest_framework.filters import SearchFilter
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
@@ -29,7 +30,6 @@ from .excepciones import (
     AlmacenamientoNoDisponible,
     ArticuloNoEditable,
     DeshabilitacionNoPermitida,
-    VersionInicialExistente,
 )
 from .filters import ArticuloCatalogoFilter, ArticuloFilter
 from .models import Articulo, ArticuloYaDeshabilitado, VersionArticulo
@@ -254,10 +254,10 @@ class MisArticulosView(generics.ListAPIView):
 
 class SubirVersionInicialView(generics.GenericAPIView):
     """
-    POST /api/articulos/{id}/versiones/   (HU-16)
+    POST /api/articulos/{id}/versiones/   (HU-16 y HU-23)
 
-    Sube el PDF inicial del artículo a Supabase Storage y lo registra en
-    VERSION_ARTICULO como la versión 1, de tipo INICIAL.
+    Crea la primera versión del PDF o agrega un reemplazo numerado como INICIAL.
+    Las versiones anteriores y sus archivos se conservan.
 
     Entrada (multipart/form-data): un campo "archivo" con el PDF.
 
@@ -268,71 +268,72 @@ class SubirVersionInicialView(generics.GenericAPIView):
 
     Respuestas:
       - 201 Created:      la versión registrada (sin la ruta privada del bucket).
-      - 400 Bad Request:  el archivo no es un PDF válido o pesa más de 10 MB
-                          (error en "archivo"); o el artículo ya tiene su PDF
-                          inicial, está deshabilitado o su plazo venció ("detail").
+      - 400 Bad Request:  archivo inválido, plazo vencido, artículo deshabilitado
+                          o conflicto de numeración.
       - 401 Unauthorized: no se envió un token válido.
       - 403 Forbidden:    el rol activo no es AUTOR, o el artículo es de otro autor.
       - 404 Not Found:    no existe un artículo con ese id.
       - 503 Service Unavailable: Supabase Storage no respondió.
     """
 
-    # select_related trae la conferencia en la misma consulta: se usa para
-    # revisar el plazo de postulación.
-    queryset = Articulo.objects.select_related("conferencia")
+    # La fila bloqueada serializa el cálculo del siguiente número de versión.
+    queryset = Articulo.objects.select_for_update().select_related("conferencia")
     serializer_class = SubirVersionInicialSerializer
-
-    # Los mismos permisos de los coautores (HU-15): rol activo AUTOR y, con el
-    # artículo ya encontrado, que sea su autor responsable.
     permission_classes = [RequiereRolActivo, EsAutorResponsable]
     roles_permitidos = [Rol.Nombre.AUTOR]
-
-    # Solo se reciben formularios con archivos (multipart/form-data).
     parser_classes = [MultiPartParser]
 
     def post(self, request, pk):
-        # Paso 1: buscar el artículo y revisar los permisos (404 o 403).
-        articulo = self.get_object()
-
-        # Paso 2: el artículo debe seguir siendo editable (400).
-        motivo = articulo.motivo_no_editable()
-        if motivo:
-            raise ArticuloNoEditable(motivo)
-
-        # Paso 3: solo hay un PDF inicial por artículo (400). Se revisa ANTES
-        # de subir, para no gastar espacio en Supabase con un archivo que no
-        # se va a registrar.
-        if articulo.versiones.filter(tipo=VersionArticulo.Tipo.INICIAL).exists():
-            raise VersionInicialExistente()
-
-        # Paso 4: validar el archivo: .pdf, <= 10 MB y firma %PDF (400).
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        archivo = serializer.validated_data["archivo"]
-
-        # Paso 5: subir el PDF al bucket privado (503 si Supabase falla).
-        try:
-            ruta = subir_pdf_articulo(articulo.id, archivo)
-        except Exception as error:
-            logger.exception("No se pudo subir el PDF del artículo %s.", articulo.id)
-            raise AlmacenamientoNoDisponible() from error
-
-        # Paso 6: registrar la versión 1. Si falla, se borra el PDF recién
-        # subido, para que no quede un archivo sin registro en el bucket.
+        ruta = None
         try:
             with transaction.atomic():
+                # Paso 1: revisar titularidad, estado y plazo con el artículo bloqueado.
+                articulo = self.get_object()
+                motivo = articulo.motivo_no_editable()
+                if motivo:
+                    raise ArticuloNoEditable(motivo)
+
+                # Paso 2: validar MIME, extensión, tamaño y firma antes de Storage.
+                serializer = self.get_serializer(data=request.data)
+                serializer.is_valid(raise_exception=True)
+                archivo = serializer.validated_data["archivo"]
+
+                # Paso 3: asignar el número posterior a todas las versiones existentes.
+                ultimo_numero = articulo.versiones.aggregate(
+                    maximo=Max("numero")
+                )["maximo"]
+                numero = (ultimo_numero or 0) + 1
+
+                # Paso 4: cada carga usa una ruta nueva; nunca se pisa el PDF anterior.
+                try:
+                    ruta = subir_pdf_articulo(articulo.id, archivo)
+                except Exception as error:
+                    logger.exception(
+                        "No se pudo subir el PDF del artículo %s.", articulo.id
+                    )
+                    raise AlmacenamientoNoDisponible() from error
+
+                # Paso 5: registrar el archivo dentro de la misma transacción.
                 version = VersionArticulo.objects.create(
                     articulo=articulo,
                     tipo=VersionArticulo.Tipo.INICIAL,
-                    numero=1,
+                    numero=numero,
                     ruta_pdf=ruta,
                 )
-        except Exception as error:
-            borrar_pdf_huerfano(ruta)
-            # Dos subidas al mismo tiempo: ambas pasaron el paso 3, pero la
-            # restricción uk_version_articulo_numero solo deja guardar una.
-            if isinstance(error, IntegrityError):
-                raise VersionInicialExistente() from error
+        except IntegrityError as error:
+            if ruta:
+                borrar_pdf_huerfano(ruta)
+            raise serializers.ValidationError(
+                {
+                    "detail": (
+                        "No se pudo registrar la versión por una carga simultánea. "
+                        "Intente nuevamente."
+                    )
+                }
+            ) from error
+        except Exception:
+            if ruta:
+                borrar_pdf_huerfano(ruta)
             raise
 
         return Response(VersionArticuloSerializer(version).data, status=status.HTTP_201_CREATED)
