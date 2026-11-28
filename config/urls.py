@@ -32,4 +32,7 @@ urlpatterns = [
 
     # Postulación y gestión de artículos (HU-14 en adelante).
     path("api/articulos/", include("articulos.urls")),
+
+    # Revisión y arbitraje: jurados, evaluaciones y veredicto (HU-24 a HU-29).
+    path("api/revisiones/", include("revisiones.urls")),
 ]

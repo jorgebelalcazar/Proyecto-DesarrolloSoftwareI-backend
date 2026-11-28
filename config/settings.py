@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     "django_filters",  # Filtros por parámetros en la URL, como ?rol=AUTOR (HU-09)
     "conferencias",  # Ediciones de la conferencia y plazos de cada etapa (HU-13)
     "articulos",  # Postulación y gestión de artículos (HU-14 en adelante)
+    "revisiones",  # Asignación de jurados, evaluaciones y veredicto (HU-24 a HU-29)
 ]
 
 # Modelo de usuario propio del proyecto.
